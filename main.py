@@ -9,7 +9,6 @@ from services.evolution_service import evolution_service
 from services.vision_service import vision_service
 from services.agent_service import agent_service
 
-# Configuracao de logs
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -31,7 +30,6 @@ async def health_check():
     }
 
 async def process_whatsapp_message(body: Dict[str, Any]):
-    """Processamento em segundo plano da mensagem recebida do WhatsApp"""
     try:
         event = body.get("event")
         if event != "messages.upsert":
@@ -40,12 +38,11 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         data = body.get("data", {})
         key = data.get("key", {})
         
-        # Ignorar mensagens enviadas por mim mesmo (fromMe = True)
         if key.get("fromMe"):
             return
 
         remote_jid = key.get("remoteJid", "")
-        if not remote_jid or "g.us" in remote_jid:  # Ignorar grupos do WhatsApp
+        if not remote_jid or "g.us" in remote_jid:
             return
 
         instance = body.get("instance", "")
@@ -56,19 +53,19 @@ async def process_whatsapp_message(body: Dict[str, Any]):
 
         logger.info(f"Mensagem recebida de {push_name} ({remote_jid}) - Tipo: {message_type}")
 
-        # 1. Obter dados da Empresa no Supabase
-        empresa_data = await supabase_service.get_empresa_by_id(apikey)
+        # 1. Resolucao Inteligente da Empresa no Supabase (por apikey, instance ou fallback)
+        empresa_data = await supabase_service.get_empresa_by_identifier(apikey, instance)
         if not empresa_data:
-            logger.warning(f"Empresa nao encontrada para apikey/user_id: {apikey}")
+            logger.warning(f"Empresa nao encontrada para apikey: {apikey}, instance: {instance}")
             return
 
-        empresa_id = empresa_data.get("id_empresa")
-        empresa_rows = await supabase_service.get_empresa_by_id(empresa_data.get("user_id")) or {}
+        empresa_id = empresa_data.get("id", empresa_data.get("id_empresa"))
+        empresa_rows = empresa_data
 
         # 2. Registrar cliente em clientes_whatsapp
         await supabase_service.registrar_cliente_se_nao_existir(empresa_id, remote_jid, push_name)
 
-        # 3. Verificar se transbordo humano esta ativo ou agente desabilitado
+        # 3. Verificar se transbordo humano esta ativo
         cliente_db = await supabase_service.get_cliente_whatsapp(empresa_id, remote_jid)
         if cliente_db and cliente_db.get("transbordo_humano"):
             logger.info(f"Transbordo humano ativo para {remote_jid}. Ignorando IA.")
@@ -88,13 +85,12 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         elif message_type == "extendedTextMessage":
             user_message_text = message_obj.get("extendedTextMessage", {}).get("text", "")
         else:
-            # Fallback para outros tipos de mensagem
             user_message_text = message_obj.get("conversation") or "Mensagem recebida"
 
         if not user_message_text.strip():
             return
 
-        # 6. Executar o Agente Inteligente com OpenAI SDK
+        # 6. Executar o Agente Inteligente com OpenAI SDK / OpenRouter
         reply_text = await agent_service.run_agent(
             empresa_data=empresa_data,
             empresa_rows=empresa_rows,
