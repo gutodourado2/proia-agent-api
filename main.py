@@ -1,0 +1,126 @@
+import logging
+from typing import Dict, Any
+from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
+from fastapi.responses import JSONResponse
+
+from config import settings
+from services.supabase_service import supabase_service
+from services.evolution_service import evolution_service
+from services.vision_service import vision_service
+from services.agent_service import agent_service
+
+# Configuracao de logs
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("proia_agent_api")
+
+app = FastAPI(
+    title="ProIA Delivery Agent API",
+    version="1.0.0",
+    description="Microservico de Agente Inteligente de Delivery integrado com OpenAI SDK, Supabase e Evolution API"
+)
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "ProIA Delivery Agent API",
+        "supabase": "connected"
+    }
+
+async def process_whatsapp_message(body: Dict[str, Any]):
+    """Processamento em segundo plano da mensagem recebida do WhatsApp"""
+    try:
+        event = body.get("event")
+        if event != "messages.upsert":
+            return
+
+        data = body.get("data", {})
+        key = data.get("key", {})
+        
+        # Ignorar mensagens enviadas por mim mesmo (fromMe = True)
+        if key.get("fromMe"):
+            return
+
+        remote_jid = key.get("remoteJid", "")
+        if not remote_jid or "g.us" in remote_jid:  # Ignorar grupos do WhatsApp
+            return
+
+        instance = body.get("instance", "")
+        apikey = body.get("apikey", "")
+        push_name = data.get("pushName", "Cliente")
+        message_type = data.get("messageType", "conversation")
+        message_obj = data.get("message", {})
+
+        logger.info(f"Mensagem recebida de {push_name} ({remote_jid}) - Tipo: {message_type}")
+
+        # 1. Obter dados da Empresa no Supabase
+        empresa_data = await supabase_service.get_empresa_by_id(apikey)
+        if not empresa_data:
+            logger.warning(f"Empresa nao encontrada para apikey/user_id: {apikey}")
+            return
+
+        empresa_id = empresa_data.get("id_empresa")
+        empresa_rows = await supabase_service.get_empresa_by_id(empresa_data.get("user_id")) or {}
+
+        # 2. Registrar cliente em clientes_whatsapp
+        await supabase_service.registrar_cliente_se_nao_existir(empresa_id, remote_jid, push_name)
+
+        # 3. Verificar se transbordo humano esta ativo ou agente desabilitado
+        cliente_db = await supabase_service.get_cliente_whatsapp(empresa_id, remote_jid)
+        if cliente_db and cliente_db.get("transbordo_humano"):
+            logger.info(f"Transbordo humano ativo para {remote_jid}. Ignorando IA.")
+            return
+
+        # 4. Enviar sinal de 'digitando...' no WhatsApp
+        await evolution_service.send_presence(instance, remote_jid, "composing")
+
+        # 5. Extrair conteudo da mensagem (Texto, Imagem, PDF ou Audio)
+        user_message_text = ""
+        base64_data = message_obj.get("base64")
+
+        if message_type in ["imageMessage", "documentMessage"] and base64_data:
+            user_message_text = await vision_service.analyze_pix_receipt(base64_data, message_type)
+        elif message_type == "conversation":
+            user_message_text = message_obj.get("conversation", "")
+        elif message_type == "extendedTextMessage":
+            user_message_text = message_obj.get("extendedTextMessage", {}).get("text", "")
+        else:
+            # Fallback para outros tipos de mensagem
+            user_message_text = message_obj.get("conversation") or "Mensagem recebida"
+
+        if not user_message_text.strip():
+            return
+
+        # 6. Executar o Agente Inteligente com OpenAI SDK
+        reply_text = await agent_service.run_agent(
+            empresa_data=empresa_data,
+            empresa_rows=empresa_rows,
+            contact_name=push_name,
+            remote_jid=remote_jid,
+            user_message=user_message_text,
+            instance=instance
+        )
+
+        # 7. Disparar a resposta para o WhatsApp via Evolution API
+        if reply_text.strip():
+            await evolution_service.send_text_message(instance, remote_jid, reply_text)
+
+    except Exception as e:
+        logger.error(f"Erro no processamento da mensagem: {e}", exc_info=True)
+
+@app.post("/webhook/whatsapp")
+async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
+    try:
+        body = await request.json()
+        background_tasks.add_task(process_whatsapp_message, body)
+        return JSONResponse(status_code=200, content={"status": "received"})
+    except Exception as e:
+        logger.error(f"Erro ao receber webhook: {e}")
+        raise HTTPException(status_code=400, detail="Payload invalido")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

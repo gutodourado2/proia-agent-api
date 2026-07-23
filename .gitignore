@@ -1,0 +1,4 @@
+.env
+coolify_key
+__pycache__/
+*.pyc
