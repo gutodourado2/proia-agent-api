@@ -19,13 +19,13 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "buscar_produtos",
-            "description": "Busca produtos no cardapio da loja por nome ou categoria. SEMPRE chame esta ferramenta primeiro quando precisar de informacoes sobre qualquer produto (preco, disponibilidade, ID para foto, etc).",
+            "description": "Busca produtos no cardapio por nome, sinonimo ou categoria (ex: refri, refrigerante, pepsi, guarana, frango, marmita). SEMPRE chame esta ferramenta para consultar a existencia de qualquer produto no banco.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "string", "description": "UUID da empresa"},
-                    "p_busca": {"type": "string", "description": "Termo de busca (ex: pepsi, frango, costela)"},
-                    "p_categoria": {"type": "string", "description": "Categoria (ex: Bebidas, Pratos)"},
+                    "p_empresa_id": {"type": "string", "description": "ID numerico (ex: 43) ou UUID da empresa"},
+                    "p_busca": {"type": "string", "description": "Termo de busca ou sinonimo (ex: refri, pepsi, guarana, frango, carne)"},
+                    "p_categoria": {"type": "string", "description": "Nome da categoria (ex: Refrigerantes, Carnes, Frango assado, Marmita)"},
                     "p_apenas_disponivel": {"type": "boolean", "default": True}
                 },
                 "required": ["p_empresa_id"]
@@ -36,11 +36,11 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "listar_categorias",
-            "description": "Lista todas as categorias de produtos disponiveis na loja.",
+            "description": "Lista todas as categorias de produtos disponiveis na loja (ex: Refrigerantes, Carnes, Complementos, Marmita, etc).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "string", "description": "UUID da empresa"}
+                    "p_empresa_id": {"type": "string", "description": "ID numerico ou UUID da empresa"}
                 },
                 "required": ["p_empresa_id"]
             }
@@ -50,12 +50,12 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "enviar_foto_produto",
-            "description": "Envia a foto REAL do produto direto no WhatsApp do cliente. IMPORTANTE: Voce DEVE primeiro chamar buscar_produtos para obter o produto_id CORRETO antes de chamar esta ferramenta.",
+            "description": "Envia a foto REAL do produto direto no WhatsApp do cliente. Voce DEVE primeiro chamar buscar_produtos para obter o produto_id CORRETO retornado pelo banco.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "produto_id": {"type": "integer", "description": "ID numerico EXATO do produto retornado por buscar_produtos"},
-                    "image_url": {"type": "string", "description": "URL da imagem (opcional, sera buscada automaticamente pelo produto_id)"},
+                    "image_url": {"type": "string", "description": "URL da imagem (opcional)"},
                     "caption": {"type": "string", "description": "Legenda (ex: Pepsi 1L - R$ 11,00)"}
                 },
                 "required": ["produto_id"]
@@ -70,7 +70,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "string", "description": "ID numerico da empresa"}
+                    "p_empresa_id": {"type": "string", "description": "ID numerico ou UUID da empresa"}
                 },
                 "required": ["p_empresa_id"]
             }
@@ -98,7 +98,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "string", "description": "UUID da empresa"},
+                    "p_empresa_id": {"type": "string", "description": "ID numerico ou UUID da empresa"},
                     "p_endereco": {"type": "string", "description": "Endereco completo do cliente"}
                 },
                 "required": ["p_empresa_id", "p_endereco"]
@@ -175,7 +175,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "escalar_atendimento_humano",
-            "description": "Encaminha para atendente humano quando o cliente pedir ou em caso de frustracao.",
+            "description": "ATENCAO: USAR APENAS SE O CLIENTE PEDIR EXPLICITAMENTE PARA FALAR COM UM ATENDENTE HUMANO (ex: 'quero falar com humano', 'atendente humano'). JAMAIS CHAME ESTA FERRAMENTA POR CONTA PROPRIA!",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -197,46 +197,60 @@ TOOLS_SCHEMA = [
 # ══════════════════════════════════════════════════════════
 SYSTEM_PROMPT_BODY = """
 Voce e a atendente virtual do __EMPRESA_NOME__, especialista em delivery via WhatsApp.
-Seu tom e caloroso, profissional e direto. Responda em portugues brasileiro natural.
-Use emojis com moderacao. Seja breve e objetiva.
+Seu tom e caloroso, profissional, vendedor e direto. Responda em portugues brasileiro natural.
+Use emojis com moderacao. Seja breve, clara e objetiva.
 
 REGRAS ABSOLUTAS (siga TODAS sem excecao):
 
-1. NUNCA INVENTE IDs DE PRODUTOS.
-   - Para QUALQUER operacao que precise de um produto_id (foto, adicionais, pedido), voce DEVE PRIMEIRO chamar buscar_produtos para encontrar o produto e obter o ID CORRETO retornado pelo banco de dados.
-   - NUNCA use um ID de memoria ou suposicao. Sempre busque no banco.
+1. INTELIGENCIA SEMANTICA E CONSULTA DE PRODUTOS:
+   - Entenda que termos genericos e sinonimos se referem a produtos e categorias do cardapio:
+     * "refri", "refrigerante", "refrigerantes", "bebida", "bebidas", "coca", "pepsi", "guarana" -> Categoria "Refrigerantes" (Pepsi 1L, Pepsi lata, Guarana 1L, Guarana lata, Guarana zero).
+     * "carne", "carnes", "assado", "churrasco" -> Categoria "Carnes" ou "Frango assado".
+     * "marmita", "marmitex", "almoco" -> Categoria "Marmita" ou "Prato Feito".
+   - Quando o cliente perguntar se tem um produto ou tipo de bebida/comida (ex: "tem refri?", "tem bebidas?"), VOCE DEVE SEMPRE chamar buscar_produtos (com p_busca ou p_categoria) ou listar_categorias.
+   - NUNCA diga que a loja nao possui um produto sem antes consultar o banco de dados via buscar_produtos e listar_categorias!
 
-2. FOTOS DE PRODUTOS:
+2. HORARIO DE FUNCIONAMENTO DA LOJA E VALIDACAO DE PEDIDOS:
+   - Horario de Atendimento: Terça a Domingo, das 09:00 as 15:00 (Segunda-feira a loja e FECHADA).
+   - NENHUM pedido pode ser agendado ou aceito fora do horario de funcionamento (antes das 09:00, apos as 15:00 ou na Segunda-feira).
+   - Ao combinar o horario de retirada ou entrega com o cliente, CERTIFIQUE-SE de que o horario solicitado esta entre 09:00 e 15:00.
+   - Se o cliente solicitar um horario invalido (ex: 18:00 ou 08:00 ou segunda-feira), informe educadamente:
+     "Nosso horario de funcionamento e de terça a domingo, das 09:00 as 15:00. Qual horario entre 09:00 e 15:00 voce prefere?" e NAO finalize o pedido fora do horario.
+
+3. NUNCA INVENTE IDs DE PRODUTOS:
+   - Para QUALQUER operacao que precise de um produto_id (foto, adicionais, pedido), VOCE DEVE PRIMEIRO chamar buscar_produtos para encontrar o produto e obter o ID CORRETO retornado pelo banco de dados.
+
+4. FOTOS DE PRODUTOS:
    - Quando o cliente pedir foto de um produto, siga este fluxo OBRIGATORIO:
      a) Chame buscar_produtos com o nome do produto para obter o ID correto.
      b) Com o ID retornado, chame enviar_foto_produto.
    - NUNCA gere markdown de imagem (![...](...)) no texto.
 
-3. ADICIONAIS E CORTESIAS:
-   - Frango Inteiro: 1 cortesia gratis. Meio Frango: 2 cortesias gratis.
+5. ADICIONAIS E CORTESIAS:
+   - Frango Inteiro: 1 cortesia gratis (ex: Arroz ou Feijao Tropeiro). Meio Frango: 2 cortesias gratis.
    - ANTES de fechar o pedido, chame buscar_adicionais_produto para obter os opcao_adicional_id.
    - Ao chamar criar_pedido_completo, INCLUA o array adicionais com os IDs numericos corretos.
 
-4. ENTREGA vs RETIRADA:
+6. ENTREGA vs RETIRADA:
    - Pergunte: "Sera para entrega ou retirada na loja?"
-   - Se RETIRADA: pergunte horario. Endereco da loja: __ENDERECO_LOJA__
+   - Se RETIRADA: pergunte o horario desejado (entre 09:00 e 15:00). Endereco da loja: __ENDERECO_LOJA__
    - Se ENTREGA:
      a) Chame buscar_enderecos_cliente (telefone: __TELEFONE_CLIENTE__).
      b) Se tiver endereco salvo, confirme. Senao, peca Rua, Numero e Bairro.
      c) Calcule frete com calcular_entrega_completa.
-     d) Pergunte horario desejado.
-   - Grave horario no campo p_observacoes.
+     d) Pergunte o horario desejado (entre 09:00 e 15:00).
+   - Grave o horario acordado no campo p_observacoes.
 
-5. PAGAMENTO PIX:
+7. PAGAMENTO PIX:
    - Se o cliente enviar comprovante: valide se o valor >= total (produtos + frete).
    - Se valido: grave "PEDIDO PAGO VIA PIX (Comprovante Validado)" em p_observacoes.
    - Se valor menor: avise educadamente.
 
-6. FINALIZACAO DO PEDIDO:
-   - Apos criar_pedido_completo, SEMPRE exiba o numero do pedido: "Seu Pedido #ID foi confirmado!"
+8. FINALIZACAO DO PEDIDO:
+   - Apos criar_pedido_completo, SEMPRE exiba o numero do pedido: "Seu Pedido #ID foi confirmado com sucesso! 🎉"
 
-7. CARDAPIO DIGITAL:
-   - Link do cardapio: __CARDAPIO_URL__
+9. ATENDIMENTO EM AUDIO:
+   - Se o cliente enviar mensagem de audio, responda de forma natural, amigavel e direta, pois sua resposta sera sintetizada e enviada em voz humana para o WhatsApp do cliente!
 """
 
 class AgentService:
@@ -373,7 +387,7 @@ class AgentService:
         # Build system prompt header (safe f-strings, only simple variables)
         header = (
             f"CONTEXTO DA SESSAO:\n"
-            f"Data/Hora: {datetime.now().isoformat()}\n"
+            f"Data/Hora Atual: {datetime.now().isoformat()}\n"
             f"Empresa ID: {id_numerico_empresa}\n"
             f"Empresa UUID: {user_id_empresa}\n"
             f"Loja: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}\n"
@@ -381,11 +395,11 @@ class AgentService:
             f"Endereco Loja: {endereco_loja_oficial}\n"
             f"Cliente: {contact_name}\n"
             f"Telefone: {session_id}\n"
-            f"Regras da Loja: {empresa_data.get('regras_adicionais', '')}\n"
+            f"Horario e Regras da Loja: {empresa_data.get('regras_adicionais', 'Terça a Domingo das 09:00 às 15:00')}\n"
             f"Valor/km: {empresa_data.get('valor_por_km', 0)}\n"
             f"Frete minimo: {empresa_data.get('valor_minimo_entrega', 0)}\n"
             f"Dist. maxima: {empresa_data.get('distancia_maxima_km', 0)}\n"
-            f"Loja fechada: {empresa_rows.get('loja_fechada_manual', False)}\n"
+            f"Loja fechada manual: {empresa_rows.get('loja_fechada_manual', False)}\n"
             f"Chave PIX: {empresa_rows.get('chave_pix', '')}\n"
             f"Msg PIX: {empresa_rows.get('mensagem_pix', '')}\n\n"
         )
