@@ -4,6 +4,8 @@
 - **Microserviço**: Python FastAPI + AsyncOpenAI / OpenRouter SDK + Supabase + Evolution API.
 - **Repositório Git**: `/Users/gutemberguedourado/Documents/GitHub/proia-agent-api` (branch `main`).
 - **Deploy**: Automático no Coolify a cada `git push origin main`.
+- **Evolution API URL Oficial**: `https://evo.proia.com.br` (Chave Global: `72055e41-9f72-4dac-97c2-7b5109890b50`).
+- **Supabase URL**: `https://askqkwvpjhotytmxcfqx.supabase.co`.
 
 ---
 
@@ -46,7 +48,7 @@
 
 ### 1. Síntese de Voz (TTS) com OpenRouter / Gemini 3.1 Flash
 - Endpoint: `https://openrouter.ai/api/v1/audio/speech` com modelo `google/gemini-3.1-flash-tts-preview` (Voz `puck` para feminina, `Kore` para masculina).
-- **Conversor PCM to WAV**: Injeta um cabeçalho RIFF/WAV de 44 bytes a 24000 Hz (`pcm_to_wav`) antes de codificar em base64 para que o WhatsApp reproduza o som nativamente.
+- **Conversor PCM to WAV**: Injeta um cabeçalho RIFF/WAV de 44 bytes a 24000 Hz (`pcm_to_wav`) antes de codificar em base64 para que o WhatsApp reproduza o som nativamente via Evolution API (`https://evo.proia.com.br`).
 - **Fallback OpenAI**: `gpt-4o-mini-tts` / `tts-1` (`coral` / `cedar` ou `alloy` / `echo`).
 
 ### 2. Transcrição de Voz (OpenAI Whisper)
