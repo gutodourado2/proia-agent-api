@@ -153,7 +153,10 @@ class SupabaseService:
         return raw
 
     async def criar_pedido_completo(self, payload: Dict[str, Any]):
-        return await self.rpc("criar_pedido_completo", payload)
+        raw = await self.rpc("criar_pedido_completo", payload)
+        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], dict) and "criar_pedido_completo" in raw[0]:
+            return raw[0]["criar_pedido_completo"]
+        return raw
 
     async def consultar_pedido(self, p_pedido_id: int):
         return await self.rpc("consultar_pedido", {"p_pedido_id": int(p_pedido_id)})
