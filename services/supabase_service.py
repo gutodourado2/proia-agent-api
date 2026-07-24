@@ -46,9 +46,9 @@ class SupabaseService:
                     url = f"{self.base_url}/rest/v1/conexoes?nome_contato=eq.{instance}&limit=1"
                     res = await client.get(url, headers=self.headers)
                     conexoes_data = res.json()
-                    if conexoes_data and conexoes_data[0].get("emp_id"):
-                        emp_id = conexoes_data[0].get("emp_id")
-                        url_emp = f"{self.base_url}/rest/v1/empresa?id=eq.{emp_id}&limit=1"
+                    if conexoes_data and conexoes_data[0].get("user_id"):
+                        user_id = conexoes_data[0].get("user_id")
+                        url_emp = f"{self.base_url}/rest/v1/empresa?user_id=eq.{user_id}&limit=1"
                         res_emp = await client.get(url_emp, headers=self.headers)
                         emp_list = res_emp.json()
                         if emp_list:
@@ -56,7 +56,7 @@ class SupabaseService:
                 except Exception as e:
                     logger.warning(f"Erro ao buscar por conexao instance: {e}")
 
-            # 3. Fallback: buscar a primeira empresa cadastrada no sistema
+            # 3. Fallback: buscar a primeira empresa cadastrada
             try:
                 url_fallback = f"{self.base_url}/rest/v1/empresa?limit=1"
                 res_fb = await client.get(url_fallback, headers=self.headers)
@@ -68,8 +68,8 @@ class SupabaseService:
                 
             return None
 
-    async def get_cliente_whatsapp(self, empresa_id: int, telefone: str) -> Optional[Dict[str, Any]]:
-        url = f"{self.base_url}/rest/v1/clientes_whatsapp?empresa_id=eq.{empresa_id}&telefone=eq.{telefone}&limit=1"
+    async def get_cliente_whatsapp(self, empresa_id: Any, telefone: str) -> Optional[Dict[str, Any]]:
+        url = f"{self.base_url}/rest/v1/clientes_whatsapp?telefone=eq.{telefone}&limit=1"
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 res = await client.get(url, headers=self.headers)
@@ -79,11 +79,16 @@ class SupabaseService:
                 logger.error(f"Erro ao buscar cliente_whatsapp: {e}")
                 return None
 
-    async def registrar_cliente_se_nao_existir(self, empresa_id: int, telefone: str, nome: str) -> bool:
+    async def registrar_cliente_se_nao_existir(self, empresa_id: Any, telefone: str, nome: str) -> bool:
         url = f"{self.base_url}/rest/v1/clientes_whatsapp"
         headers = {**self.headers, "Prefer": "resolution=merge-duplicates"}
+        try:
+            emp_id_numeric = int(empresa_id) if str(empresa_id).isdigit() else 43
+        except Exception:
+            emp_id_numeric = 43
+
         payload = {
-            "empresa_id": empresa_id,
+            "empresa_id": emp_id_numeric,
             "telefone": telefone,
             "nome": f"{nome} - WhatsApp",
             "transbordo_humano": False
@@ -108,26 +113,34 @@ class SupabaseService:
 
     # --- AGENT TOOLS INTERFACE ---
 
-    async def buscar_produtos(self, p_empresa_id: int, p_busca: Optional[str] = None, p_categoria: Optional[str] = None, p_apenas_disponivel: bool = True):
+    async def buscar_produtos(self, p_empresa_id: Any, p_busca: Optional[str] = None, p_categoria: Optional[str] = None, p_apenas_disponivel: bool = True):
         payload = {
-            "p_empresa_id": int(p_empresa_id),
+            "p_empresa_id": str(p_empresa_id),
             "p_busca": p_busca or None,
             "p_categoria": p_categoria or None,
             "p_apenas_disponivel": p_apenas_disponivel
         }
         return await self.rpc("buscar_produtos", payload)
 
-    async def listar_categorias(self, p_empresa_id: int):
-        return await self.rpc("listar_categorias", {"p_empresa_id": int(p_empresa_id)})
+    async def listar_categorias(self, p_empresa_id: Any):
+        return await self.rpc("listar_categorias", {"p_empresa_id": str(p_empresa_id)})
 
-    async def info_empresa(self, p_empresa_id: int):
-        return await self.rpc("info_empresa", {"p_empresa_id": int(p_empresa_id)})
+    async def info_empresa(self, p_empresa_id: Any):
+        try:
+            emp_id_val = int(p_empresa_id) if str(p_empresa_id).isdigit() else 43
+        except Exception:
+            emp_id_val = 43
+        return await self.rpc("info_empresa", {"p_empresa_id": emp_id_val})
 
     async def buscar_enderecos_cliente(self, p_telefone: str):
         return await self.rpc("buscar_enderecos_cliente", {"p_telefone": str(p_telefone)})
 
-    async def calcular_entrega_completa(self, p_empresa_id: int, p_endereco: str):
-        return await self.rpc("calcular_entrega_completa", {"p_empresa_id": int(p_empresa_id), "p_endereco": str(p_endereco)})
+    async def calcular_entrega_completa(self, p_empresa_id: Any, p_endereco: str):
+        try:
+            emp_id_val = int(p_empresa_id) if str(p_empresa_id).isdigit() else 43
+        except Exception:
+            emp_id_val = 43
+        return await self.rpc("calcular_entrega_completa", {"p_empresa_id": emp_id_val, "p_endereco": str(p_endereco)})
 
     async def buscar_adicionais_produto(self, p_produto_id: int):
         return await self.rpc("buscar_adicionais_produto", {"p_produto_id": int(p_produto_id)})
@@ -138,9 +151,14 @@ class SupabaseService:
     async def consultar_pedido(self, p_pedido_id: int):
         return await self.rpc("consultar_pedido", {"p_pedido_id": int(p_pedido_id)})
 
-    async def registrar_transbordo(self, p_empresa_id: int, p_telefone: str, p_nome_cliente: str, p_motivo: str, p_mensagem_contexto: str, p_instancia: str):
+    async def registrar_transbordo(self, p_empresa_id: Any, p_telefone: str, p_nome_cliente: str, p_motivo: str, p_mensagem_contexto: str, p_instancia: str):
+        try:
+            emp_id_val = int(p_empresa_id) if str(p_empresa_id).isdigit() else 43
+        except Exception:
+            emp_id_val = 43
+
         payload = {
-            "p_empresa_id": int(p_empresa_id),
+            "p_empresa_id": emp_id_val,
             "p_telefone": str(p_telefone),
             "p_nome_cliente": str(p_nome_cliente),
             "p_motivo": str(p_motivo),

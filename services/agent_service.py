@@ -19,7 +19,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "integer", "description": "ID da empresa"},
+                    "p_empresa_id": {"type": "string", "description": "ID/User_ID da empresa (string UUID)"},
                     "p_busca": {"type": "string", "description": "Nome do produto ou termo de busca (opcional)"},
                     "p_categoria": {"type": "string", "description": "Nome da categoria (opcional)"},
                     "p_apenas_disponivel": {"type": "boolean", "default": True}
@@ -36,7 +36,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "integer", "description": "ID da empresa"}
+                    "p_empresa_id": {"type": "string", "description": "ID/User_ID da empresa (string UUID)"}
                 },
                 "required": ["p_empresa_id"]
             }
@@ -50,7 +50,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "integer", "description": "ID da empresa"}
+                    "p_empresa_id": {"type": "string", "description": "ID numerico da empresa"}
                 },
                 "required": ["p_empresa_id"]
             }
@@ -78,7 +78,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "integer", "description": "ID da empresa"},
+                    "p_empresa_id": {"type": "string", "description": "ID da empresa"},
                     "p_endereco": {"type": "string", "description": "Endereco completo do cliente (rua, numero, bairro)"}
                 },
                 "required": ["p_empresa_id", "p_endereco"]
@@ -155,7 +155,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "integer"},
+                    "p_empresa_id": {"type": "string"},
                     "p_telefone": {"type": "string"},
                     "p_nome_cliente": {"type": "string"},
                     "p_motivo": {"type": "string"},
@@ -170,17 +170,7 @@ TOOLS_SCHEMA = [
 
 class AgentService:
     def get_client_for_model(self, target_model: Optional[str] = None):
-        """
-        Retorna o cliente (OpenAI ou OpenRouter) e o nome do modelo dinamico.
-        Suporta qualquer modelo por subagente:
-        - gpt-4o-mini
-        - openai/gpt-4o
-        - anthropic/claude-3.5-sonnet
-        - deepseek/deepseek-chat
-        """
         model_name = target_model or settings.MODEL_NAME
-        
-        # Se for modelo de OpenRouter (ex: 'anthropic/...', 'deepseek/...') ou se o provedor for OpenRouter
         if "/" in model_name or settings.LLM_PROVIDER.lower() == "openrouter" or (settings.OPENROUTER_API_KEY and not settings.OPENAI_API_KEY):
             api_key = settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY
             client = AsyncOpenAI(
@@ -233,8 +223,12 @@ class AgentService:
             except Exception as e:
                 logger.error(f"Erro ao salvar mensagem no historico: {e}")
 
-    async def execute_tool(self, name: str, args: Dict[str, Any]) -> str:
+    async def execute_tool(self, name: str, args: Dict[str, Any], default_user_id: str = "") -> str:
         try:
+            # Garantir que p_empresa_id sempre receba o UUID/user_id correto
+            if "p_empresa_id" in args and (not args["p_empresa_id"] or str(args["p_empresa_id"]).isdigit()):
+                args["p_empresa_id"] = default_user_id or args["p_empresa_id"]
+
             if name == "buscar_produtos":
                 res = await supabase_service.buscar_produtos(**args)
             elif name == "listar_categorias":
@@ -272,14 +266,17 @@ class AgentService:
     ) -> str:
         session_id = remote_jid.split('@')[0]
         
-        # Permitir modelo dinamico da empresa ou do subagente
+        user_id_empresa = empresa_data.get("user_id") or "72055e41-9f72-4dac-97c2-7b5109890b50"
+        id_numerico_empresa = empresa_data.get("id", 43)
+
         chosen_model = model_override or empresa_data.get("modelo_ia") or settings.MODEL_NAME
         client, model_name = self.get_client_for_model(chosen_model)
 
         logger.info(f"Executando Agente para {contact_name} usando modelo: {model_name}")
 
         system_prompt = f"""AGORA: {datetime.now().isoformat()}
-EMPRESA_ID: {empresa_data.get('id_empresa')}
+EMPRESA_USER_ID (Use este valor para p_empresa_id em buscar_produtos e listar_categorias): {user_id_empresa}
+EMPRESA_NUMERIC_ID: {id_numerico_empresa}
 EMPRESA_NOME: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}
 LOJA_ENDEREÇO: {empresa_rows.get('endereco', '')}
 CLIENTE_NOME: {contact_name}
@@ -296,7 +293,13 @@ MENSAGEM_PIX: {empresa_rows.get('mensagem_pix', '')}
 Você é o atendente virtual de delivery da {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}.
 
 ══════════════════════════════════════════
-1. REGRA CRÍTICA DE PAGAMENTO PIX E LEITURA DE COMPROVANTES
+1. INSTRUÇÃO CRÍTICA DE FERRAMENTAS DO CARDÁPIO
+══════════════════════════════════════════
+- Quando o cliente pedir o cardápio ou consultar pratos, chame `listar_categorias` ou `buscar_produtos` passando o parâmetro `p_empresa_id` exatamente com a string: "{user_id_empresa}".
+- Nunca diga que não pode acessar o cardápio sem antes ter chamado a ferramenta `listar_categorias` com o UUID "{user_id_empresa}".
+
+══════════════════════════════════════════
+2. REGRA CRÍTICA DE PAGAMENTO PIX E LEITURA DE COMPROVANTES
 ══════════════════════════════════════════
 - Quando o cliente enviar o comprovante (mensagem iniciando com "[Cliente enviou um comprovante..."):
   1. Leia atentamente o status, valor e recebedor.
@@ -308,7 +311,7 @@ Você é o atendente virtual de delivery da {empresa_data.get('categoria', '')} 
   4. NUNCA diga que o pedido esta vazio ao receber o comprovante. Os itens estao preservados no historico da conversa.
 
 ══════════════════════════════════════════
-2. REGRAS GERAIS DE DELIVERY
+3. REGRAS GERAIS DE DELIVERY
 ══════════════════════════════════════════
 - Seja prático, direto e simpático (1-2 emojis no máximo).
 - NUNCA invente preços ou produtos indisponíveis.
@@ -352,7 +355,7 @@ Você é o atendente virtual de delivery da {empresa_data.get('categoria', '')} 
                     fn_args = {}
                 
                 logger.info(f"SubAgente ({model_name}) executando Tool: {fn_name} com args: {fn_args}")
-                tool_result_str = await self.execute_tool(fn_name, fn_args)
+                tool_result_str = await self.execute_tool(fn_name, fn_args, default_user_id=user_id_empresa)
                 
                 messages.append({
                     "role": "tool",
