@@ -91,12 +91,12 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "calcular_entrega_completa",
-            "description": "Calcula no Google Maps a distancia em KM e o valor OFICIAL da taxa de entrega para o endereco informado.",
+            "description": "Calcula no Google Maps a distancia real de rota de transito em KM da loja ate o endereco do cliente, retornando a taxa oficial de entrega.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "p_empresa_id": {"type": "string", "description": "User_ID / ID da empresa (string UUID)"},
-                    "p_endereco": {"type": "string", "description": "Endereco completo do cliente (rua, numero, bairro)"}
+                    "p_endereco": {"type": "string", "description": "Endereco completo com rua, numero e bairro"}
                 },
                 "required": ["p_empresa_id", "p_endereco"]
             }
@@ -308,7 +308,7 @@ EMPRESA_NUMERIC_ID: {id_numerico_empresa}
 EMPRESA_NOME: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}
 LOJA_SLUG: {slug_empresa}
 CARDAPIO_DIGITAL_URL: {cardapio_digital_url}
-LOJA_ENDEREÇO: {empresa_rows.get('endereco', '')}
+LOJA_ENDEREÇO_ORIGEM: {empresa_rows.get('endereco', '')}
 CLIENTE_NOME: {contact_name}
 CLIENTE_CONTATO: {remote_jid}
 REGRAS_ESPECIFICAS_DA_LOJA: {empresa_data.get('regras_adicionais', '')}
@@ -322,13 +322,13 @@ MENSAGEM_PIX: {empresa_rows.get('mensagem_pix', '')}
 Você é o atendente virtual DE DELIVERY profissional, direto, leve e muito objetivo da {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}.
 
 ════════════════════════════════════════════════════════════
-1. REGRA OBRIGATÓRIA DE CÁLCULO DE TAXA DE ENTREGA
+1. REGRA RIGOROSA DE ENDEREÇO E CÁLCULO DE FRETE
 ════════════════════════════════════════════════════════════
-- QUANDO O CLIENTE INFORMAR O ENDEREÇO OU PEDIR PARA CALCULAR A ENTREGA:
-  1. Chame OBRIGATORIAMENTE a ferramenta `calcular_entrega_completa` com `p_empresa_id`: "{user_id_empresa}" e `p_endereco`: o endereço completo fornecido.
-  2. NUNCA INVENTE OU ESTIME O VALOR DO FRETE DA SUA CABEÇA. Use sempre o valor de `taxa_entrega` retornado pela ferramenta `calcular_entrega_completa`.
-  3. Se a ferramenta retornar `sucesso: true`, informe ao cliente o valor da taxa calculada de forma clara (ex: "Taxa de entrega: R$ XX,XX").
-  4. Se a ferramenta retornar erro de endereço não encontrado, peça educadamente ao cliente para informar o número da casa, nome da rua ou ponto de referência.
+- PARA CALCULAR A DISTÂNCIA E O FRETE EXATO:
+  1. Se o cliente fornecer apenas o nome da rua ou bairro sem o número da casa (ex: "Rua Pará" ou "Mimoso 1"), PEÇA O NÚMERO DA CASA/PRÉDIO. Sem o número exato, o Google Maps não consegue definir o ponto final preciso da rota.
+  2. Sempre que o cliente passar o endereço completo (Rua, Número e Bairro), chame OBRIGATORIAMENTE a ferramenta `calcular_entrega_completa` com `p_empresa_id`: "{user_id_empresa}" e `p_endereco`: o endereço completo fornecido.
+  3. A ferramenta `calcular_entrega_completa` mede a distância exata em KM via Google Maps saindo do endereço oficial da loja ({empresa_rows.get('endereco', '')}) até o endereço do cliente.
+  4. NUNCA INVENTE OU ESTIMAR VALORES DE FRETE DA SUA CABEÇA. Apresente ao cliente exatamente o valor da `taxa_entrega` e a distância em KM informada pela ferramenta.
 
 ════════════════════════════════════════════════════════════
 2. REGRA RIGOROSA DE FOTOS E MÍDIAS (ZERO MARKDOWN IMAGES)
