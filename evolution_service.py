@@ -54,6 +54,24 @@ class EvolutionService:
                 logger.error(f"Erro ao enviar mensagem de texto Evolution API: {e}")
                 return False
 
+    async def send_image_message(self, instance: str, remote_jid: str, image_url: str, caption: str = "") -> bool:
+        """Envia foto/imagem nativa do produto no WhatsApp via Evolution API"""
+        url = f"{self.base_url}/message/sendMedia/{instance}"
+        number = remote_jid.split('@')[0]
+        payload = {
+            "number": number,
+            "media": image_url,
+            "mediaType": "image",
+            "caption": caption
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            try:
+                res = await client.post(url, headers=self.get_headers(), json=payload)
+                return res.status_code < 300
+            except Exception as e:
+                logger.error(f"Erro ao enviar foto nativa Evolution API: {e}")
+                return False
+
     async def send_whatsapp_audio(self, instance: str, remote_jid: str, base64_audio: str) -> bool:
         """Envia arquivo de áudio PTT/WhatsApp via Evolution API"""
         url = f"{self.base_url}/message/sendWhatsAppAudio/{instance}"

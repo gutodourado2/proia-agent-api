@@ -1,3 +1,4 @@
+import re
 import logging
 from typing import Dict, Any
 from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
@@ -106,14 +107,18 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             instance=instance
         )
 
+        # Filtro de seguranca absoluto: remover qualquer formato markdown de imagem antes de enviar ao WhatsApp
+        clean_text = re.sub(r'!\[.*?\]\([^\)]+\)', '', reply_text)
+        clean_text = re.sub(r'https?://\S+\.(?:jpg|jpeg|png|webp)', '', clean_text)
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
         # 8. Disparar a resposta para o WhatsApp via Evolution API (Texto e/ou Áudio TTS)
-        if reply_text.strip():
-            # Enviar resposta em texto
-            await evolution_service.send_text_message(instance, remote_jid, reply_text)
+        if clean_text:
+            await evolution_service.send_text_message(instance, remote_jid, clean_text)
 
             # Se a mensagem recebida foi audioMessage, enviar também o áudio voz PTT gerado
             if message_type == "audioMessage":
-                audio_b64 = await tts_service.generate_speech_base64(reply_text, gender=voz_agente)
+                audio_b64 = await tts_service.generate_speech_base64(clean_text, gender=voz_agente)
                 if audio_b64:
                     await evolution_service.send_whatsapp_audio(instance, remote_jid, audio_b64)
 
