@@ -52,7 +52,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "produto_id": {"type": "integer", "description": "ID numérico do produto (ex: 1113 para Frango Inteiro)"},
+                    "produto_id": {"type": "integer", "description": "ID numerico do produto (ex: 1113 para Frango Inteiro)"},
                     "image_url": {"type": "string", "description": "URL publica da imagem do produto"},
                     "caption": {"type": "string", "description": "Legenda com nome e preco do produto"}
                 }
@@ -148,7 +148,7 @@ TOOLS_SCHEMA = [
                     "p_longitude_entrega": {"type": "number"},
                     "p_distancia_km": {"type": "number"},
                     "p_telefone_cliente": {"type": "string"},
-                    "p_observacoes": {"type": "string", "description": "Observacoes, horario de entrega/retirada e status de pagamento (ex: 'PEDIDO PAGO VIA PIX (Comprovante Validado)')"}
+                    "p_observacoes": {"type": "string", "description": "Observacoes, horario de entrega/retirada e status de pagamento"}
                 },
                 "required": ["p_empresa_id", "p_itens", "p_endereco_entrega", "p_forma_pagamento", "p_taxa_entrega", "p_telefone_cliente"]
             }
@@ -162,7 +162,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_pedido_id": {"type": "integer", "description": "ID numérico do pedido"}
+                    "p_pedido_id": {"type": "integer", "description": "ID numerico do pedido"}
                 },
                 "required": ["p_pedido_id"]
             }
@@ -188,6 +188,49 @@ TOOLS_SCHEMA = [
         }
     }
 ]
+
+# System prompt body (plain string, NO f-string, to avoid crashes with JSON curly braces)
+SYSTEM_PROMPT_BODY = """
+Voce e o atendente virtual de delivery da __EMPRESA_NOME__.
+Sua missao e ajudar o cliente a escolher produtos, indicar acompanhamentos e cortesias e finalizar o pedido com rapidez, clareza e simpatia.
+
+== 1. REGRA DE ADICIONAIS NO BANCO (CRITICO) ==
+- Sempre que o produto tiver acompanhamentos/cortesias (Frango Inteiro ID 1113, Meio Frango ID 1115, Marmita, etc.):
+  1. Chame buscar_adicionais_produto com o ID do produto para obter a lista de opcoes (opcao_adicional_id).
+  2. Ao chamar criar_pedido_completo, INCLUA OBRIGATORIAMENTE no parametro adicionais de cada item um ARRAY COM OS IDs NUMERICOS das opcoes escolhidas pelo cliente.
+  - Exemplo em p_itens: [{"produto_id": 1113, "quantidade": 1, "adicionais": [1]}] onde 1 e o opcao_adicional_id do Arroz, 3 para Feijao Tropeiro.
+  - NUNCA ENVIE o array adicionais vazio ou omita este campo para produtos com acompanhamentos!
+
+== 2. VALIDACAO DO COMPROVANTE PIX ==
+- QUANDO O CLIENTE ENVIAR UM COMPROVANTE DE PIX:
+  1. Leia a analise do comprovante (Valor e Status).
+  2. Verifique se o valor do PIX e IGUAL OU SUPERIOR ao Valor Total do Pedido (Produtos + Frete).
+  3. Se o valor pago for MENOR: avise o cliente de forma educada.
+  4. Se o valor for valido: Adicione no campo p_observacoes: "PEDIDO PAGO VIA PIX (Comprovante Validado)" junto com o horario.
+
+== 3. RETIRADA VS. ENTREGA E HORARIO ==
+- NA ETAPA DE FECHAMENTO, PERGUNTE OBRIGATORIAMENTE:
+  "O pedido sera para entrega no seu endereco ou para retirada na loja?"
+- SE RETIRADA: pergunte o horario desejado. Endereco da loja: __ENDERECO_LOJA__
+- SE ENTREGA: pergunte o horario ou se prefere entrega imediata.
+- Grave o horario acordado no campo p_observacoes ao criar o pedido.
+
+== 4. ENDERECOS SALVOS E CALCULO DE FRETE ==
+- SEMPRE QUE FOR PARA ENTREGA:
+  1. Chame OBRIGATORIAMENTE buscar_enderecos_cliente com p_telefone: "__TELEFONE_CLIENTE__".
+  2. Se houver enderecos salvos: pergunte se deseja entregar no endereco encontrado.
+  3. Se NAO houver: peca Rua, Numero e Bairro.
+  4. Com o endereco confirmado, chame calcular_entrega_completa e exiba o frete oficial.
+
+== 5. ID DO PEDIDO NA FINALIZACAO ==
+- Sempre que criar o pedido via criar_pedido_completo, exiba OBRIGATORIAMENTE o numero do Pedido (#pedido_id) na mensagem final!
+- Exemplo: "Seu Pedido #194 foi finalizado com sucesso!"
+
+== 6. FOTOS E CARDAPIO DIGITAL ==
+- ZERO MARKDOWN IMAGES: NUNCA escreva ![nome](http...) no texto.
+- FOTOS NATIVAS: Se o cliente pedir foto, acione a ferramenta enviar_foto_produto.
+- CARDAPIO DIGITAL: Se solicitar o cardapio, envie o link limpo __CARDAPIO_URL__ .
+"""
 
 class AgentService:
     def get_client_for_model(self, target_model: Optional[str] = None):
@@ -266,7 +309,7 @@ class AgentService:
                 if img_url and instance and remote_jid:
                     success = await evolution_service.send_image_message(instance, remote_jid, img_url, cap)
                     if success:
-                        return json.dumps({"sucesso": True, "mensagem": f"Foto oficial do produto enviada com sucesso no WhatsApp do cliente ({img_url})"}, ensure_ascii=False)
+                        return json.dumps({"sucesso": True, "mensagem": f"Foto oficial do produto enviada com sucesso no WhatsApp do cliente"}, ensure_ascii=False)
                     else:
                         return json.dumps({"sucesso": False, "erro": "Falha no envio da imagem pela Evolution API"}, ensure_ascii=False)
 
@@ -313,90 +356,45 @@ class AgentService:
         id_numerico_empresa = empresa_data.get("id", 43)
         slug_empresa = empresa_data.get("slug") or "cantinho-do-frango-assado"
         cardapio_digital_url = f"https://app.proia.com.br/loja/{slug_empresa}"
-        endereco_loja_oficial = empresa_rows.get("endereco", "R. São Francisco, 2249 - Lot. Mimoso Doeste I, Luís Eduardo Magalhães - BA")
+        endereco_loja_oficial = empresa_rows.get("endereco", "R. Sao Francisco, 2249 - Lot. Mimoso Doeste I, Luis Eduardo Magalhaes - BA")
 
         chosen_model = model_override or empresa_data.get("modelo_ia") or settings.MODEL_NAME
         client, model_name = self.get_client_for_model(chosen_model)
 
-        logger.info(f"Executando Agente de Delivery para {contact_name} - Modelo: {model_name} - Loja: {slug_empresa}")
+        logger.info(f"Executando Agente de Delivery para {contact_name} - Modelo: {model_name}")
 
-        system_prompt = f"""AGORA: {datetime.now().isoformat()}
-EMPRESA_USER_ID: {user_id_empresa}
-EMPRESA_NUMERIC_ID: {id_numerico_empresa}
-EMPRESA_NOME: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}
-LOJA_SLUG: {slug_empresa}
-CARDAPIO_DIGITAL_URL: {cardapio_digital_url}
-LOJA_ENDEREÇO_OFICIAL: {endereco_loja_oficial}
-CLIENTE_NOME: {contact_name}
-CLIENTE_CONTATO: {remote_jid}
-REGRAS_ESPECIFICAS_DA_LOJA: {empresa_data.get('regras_adicionais', '')}
-VALOR_POR_KM: {empresa_data.get('valor_por_km', 0)}
-VALOR_MINIMO_ENTREGA: {empresa_data.get('valor_minimo_entrega', 0)}
-DISTANCIA_MAXIMA_KM: {empresa_data.get('distancia_maxima_km', 0)}
-LOJA_FECHADA_MANUAL: {empresa_rows.get('loja_fechada_manual', False)}
-CHAVE_PIX: {empresa_rows.get('chave_pix', '')}
-MENSAGEM_PIX: {empresa_rows.get('mensagem_pix', '')}
+        # Build system prompt header with dynamic variables (safe f-string, no JSON examples)
+        header = (
+            f"AGORA: {datetime.now().isoformat()}\n"
+            f"EMPRESA_USER_ID: {user_id_empresa}\n"
+            f"EMPRESA_NUMERIC_ID: {id_numerico_empresa}\n"
+            f"EMPRESA_NOME: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}\n"
+            f"LOJA_SLUG: {slug_empresa}\n"
+            f"CARDAPIO_DIGITAL_URL: {cardapio_digital_url}\n"
+            f"LOJA_ENDERECO_OFICIAL: {endereco_loja_oficial}\n"
+            f"CLIENTE_NOME: {contact_name}\n"
+            f"CLIENTE_CONTATO: {remote_jid}\n"
+            f"REGRAS_ESPECIFICAS_DA_LOJA: {empresa_data.get('regras_adicionais', '')}\n"
+            f"VALOR_POR_KM: {empresa_data.get('valor_por_km', 0)}\n"
+            f"VALOR_MINIMO_ENTREGA: {empresa_data.get('valor_minimo_entrega', 0)}\n"
+            f"DISTANCIA_MAXIMA_KM: {empresa_data.get('distancia_maxima_km', 0)}\n"
+            f"LOJA_FECHADA_MANUAL: {empresa_rows.get('loja_fechada_manual', False)}\n"
+            f"CHAVE_PIX: {empresa_rows.get('chave_pix', '')}\n"
+            f"MENSAGEM_PIX: {empresa_rows.get('mensagem_pix', '')}\n"
+        )
 
-Você é o atendente virtual de delivery da {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}.
-Sua missão é ajudar o cliente a escolher produtos, indicar acompanhamentos e cortesias e finalizar o pedido com rapidez, clareza e simpatia.
+        # Build prompt body using safe string replace (avoids f-string crash with JSON curly braces)
+        body = SYSTEM_PROMPT_BODY
+        body = body.replace("__EMPRESA_NOME__", f"{empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}")
+        body = body.replace("__ENDERECO_LOJA__", endereco_loja_oficial)
+        body = body.replace("__TELEFONE_CLIENTE__", session_id)
+        body = body.replace("__CARDAPIO_URL__", cardapio_digital_url)
 
-════════════════════════════════════════════════════════════
-1. REGRA RIGOROSA DE GRAVAÇÃO DOS ADICIONAIS NO BANCO (CRÍTICO)
-════════════════════════════════════════════════════════════
-- Sempre que o produto tiver acompanhamentos/cortesias (como Frango Inteiro ID 1113, Meio Frango ID 1115, Marmita, etc.):
-  1. Chame `buscar_adicionais_produto` com o ID do produto para obter a lista de opções (`opcao_adicional_id`).
-  2. Ao chamar a ferramenta `criar_pedido_completo`, VOCÊ DEVE OBRIGATORIAMENTE incluir no parâmetro `adicionais` de cada item um ARRAY COM OS IDs NUMÉRICOS (`opcao_adicional_id`) das opções de acompanhamento/cortesia escolhidas pelo cliente (ou padrão).
-  - Exemplo em `p_itens`: `[{"produto_id": 1113, "quantidade": 1, "adicionais": [1]}]` (onde `1` é o `opcao_adicional_id` do Arroz ou `3` para Feijão Tropeiro).
-  - NUNCA ENVIE o array `adicionais` vazio `[]` nem omita este campo para produtos que possuem acompanhamentos!
-
-════════════════════════════════════════════════════════════
-2. REGRA DE VALIDAÇÃO DO COMPROVANTE PIX E OBSERVAÇÃO
-════════════════════════════════════════════════════════════
-- QUANDO O CLIENTE ENVIAR UM COMPROVANTE DE PIX:
-  1. Leia a análise do comprovante (Valor e Status).
-  2. VALIDAÇÃO DE VALOR: Verifique se o valor do PIX no comprovante é IGUAL OU SUPERIOR ao Valor Total do Pedido (Produtos + Frete).
-  3. Se o valor pago for MENOR do que o total do pedido: avise o cliente de forma educada que o valor pago no PIX é menor do que o total do pedido.
-  4. Se o valor for válido e confirmado:
-     - Adicione no campo `p_observacoes` da ferramenta `criar_pedido_completo`:
-       "PEDIDO PAGO VIA PIX (Comprovante Validado)" juntamente com o horário de entrega/retirada.
-
-════════════════════════════════════════════════════════════
-3. REGRA ABSOLUTA: RETIRADA VS. ENTREGA E AGENDAMENTO DE HORÁRIO
-════════════════════════════════════════════════════════════
-- NA ETAPA DE FECHAMENTO DO PEDIDO, PERGUNTE OBRIGATORIAMENTE:
-  "O pedido será para entrega no seu endereço ou para retirada na loja?"
-- PERGUNTA OBRIGATÓRIA DE HORÁRIO:
-  - SE RETIRADA: "Qual o horário que você gostaria de retirar o pedido na loja?" (Endereço da loja: {endereco_loja_oficial})
-  - SE ENTREGA: "Qual o horário que você prefere que seja entregue? Ou prefere que seja entregue o quanto antes (entrega imediata)?"
-- DOCUMENTAÇÃO NAS OBSERVAÇÕES (`p_observacoes`):
-  - O horário acordado (ex: "Horário de retirada: 12:30" ou "Entrega imediata") DEVE OBRIGATORIAMENTE ser gravado no campo `p_observacoes` ao criar o pedido.
-
-════════════════════════════════════════════════════════════
-4. REGRA DE ENDEREÇOS SALVOS E CÁLCULO DE FRETE
-════════════════════════════════════════════════════════════
-- SEMPRE QUE FOR PARA ENTREGA:
-  1. Chame OBRIGATORIAMENTE `buscar_enderecos_cliente` com `p_telefone`: "{session_id}".
-  2. Se houver endereços salvos: pergunte ao cliente se deseja entregar no endereço encontrado.
-  3. Se NÃO houver endereço salvo: peça o endereço completo (Rua, Número e Bairro).
-  4. Com o endereço confirmado, chame `calcular_entrega_completa` e exiba o frete oficial.
-
-════════════════════════════════════════════════════════════
-5. REGRA CRÍTICA DO ID DO PEDIDO NA FINALIZAÇÃO
-════════════════════════════════════════════════════════════
-- Sempre que criar o pedido via `criar_pedido_completo`, exiba OBRIGATORIAMENTE o número do Pedido (#pedido_id) na mensagem de confirmação final!
-- Exemplo: "Seu Pedido #[pedido_id] foi finalizado com sucesso! 🎉"
-
-════════════════════════════════════════════════════════════
-6. FOTOS E CARDÁPIO DIGITAL
-════════════════════════════════════════════════════════════
-- ZERO MARKDOWN IMAGES: NUNCA escreva `![nome](http...)` no texto.
-- FOTOS NATIVAS: Se o cliente pedir foto, acione a ferramenta `enviar_foto_produto`.
-- CARDÁPIO DIGITAL: Se solicitar o cardápio, envie o link limpo {cardapio_digital_url} .
-"""
+        system_prompt = header + body
 
         history = await self.get_chat_history(session_id, limit=14)
         
-        user_formatted_msg = f"Informações do contato: {contact_name}, {session_id}. Mensagem: {user_message}, Instancia: {instance}"
+        user_formatted_msg = f"Informacoes do contato: {contact_name}, {session_id}. Mensagem: {user_message}, Instancia: {instance}"
         await self.save_message_to_history(session_id, "user", user_formatted_msg)
         
         messages = [{"role": "system", "content": system_prompt}]
@@ -433,7 +431,7 @@ Sua missão é ajudar o cliente a escolher produtos, indicar acompanhamentos e c
                 except Exception:
                     fn_args = {}
                 
-                logger.info(f"SubAgente ({model_name}) executando Tool: {fn_name} com args: {fn_args}")
+                logger.info(f"Tool: {fn_name} args: {fn_args}")
                 tool_result_str = await self.execute_tool(fn_name, fn_args, default_user_id=user_id_empresa, instance=instance, remote_jid=remote_jid)
                 
                 messages.append({
@@ -443,7 +441,7 @@ Sua missão é ajudar o cliente a escolher produtos, indicar acompanhamentos e c
                     "content": tool_result_str
                 })
 
-        fallback_text = "Estou processando seu pedido. Como posso ajudar com mais alguma opção do cardápio?"
+        fallback_text = "Estou processando seu pedido. Como posso ajudar?"
         await self.save_message_to_history(session_id, "assistant", fallback_text)
         return fallback_text
 
