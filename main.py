@@ -8,6 +8,7 @@ from config import settings
 from services.supabase_service import supabase_service
 from services.evolution_service import evolution_service
 from services.vision_service import vision_service
+from services.audio_service import audio_service
 from services.agent_service import agent_service
 from services.tts_service import tts_service
 
@@ -32,6 +33,8 @@ async def health_check():
     }
 
 async def process_whatsapp_message(body: Dict[str, Any]):
+    instance = ""
+    remote_jid = ""
     try:
         event = body.get("event")
         if event != "messages.upsert":
@@ -82,17 +85,26 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         user_message_text = ""
         base64_data = message_obj.get("base64")
 
-        if message_type in ["imageMessage", "documentMessage"] and base64_data:
-            user_message_text = await vision_service.analyze_pix_receipt(base64_data, message_type)
+        caption = (
+            message_obj.get("imageMessage", {}).get("caption") or
+            message_obj.get("documentMessage", {}).get("caption") or
+            data.get("caption") or ""
+        )
+
+        if message_type == "audioMessage" and base64_data:
+            transcription = await audio_service.transcribe_audio_base64(base64_data)
+            user_message_text = transcription or "Mensagem de áudio recebida"
+        elif message_type in ["imageMessage", "documentMessage"] and base64_data:
+            user_message_text = await vision_service.analyze_image_or_receipt(base64_data, user_caption=caption, message_type=message_type)
         elif message_type == "conversation":
             user_message_text = message_obj.get("conversation", "")
         elif message_type == "extendedTextMessage":
             user_message_text = message_obj.get("extendedTextMessage", {}).get("text", "")
         else:
-            user_message_text = message_obj.get("conversation") or "Mensagem recebida"
+            user_message_text = message_obj.get("conversation") or caption or "Mensagem recebida"
 
         if not user_message_text.strip():
-            return
+            user_message_text = "Olá!"
 
         # 6. Manter sinal de 'digitando...' ou 'gravando audio...' ativado durante a resposta da IA
         await evolution_service.send_presence(instance, remote_jid, presence_type)
@@ -124,6 +136,13 @@ async def process_whatsapp_message(body: Dict[str, Any]):
 
     except Exception as e:
         logger.error(f"Erro no processamento da mensagem: {e}", exc_info=True)
+        # RESPOSTA DE FALLBACK DE SEGURANÇA: NUNCA DEIXAR O CLIENTE SEM RESPOSTA!
+        try:
+            if instance and remote_jid:
+                fallback_msg = "Recebi sua mensagem! Como posso te ajudar com o seu pedido no Cantinho do Frango Assado hoje?"
+                await evolution_service.send_text_message(instance, remote_jid, fallback_msg)
+        except Exception as ex:
+            logger.error(f"Falha ao enviar mensagem de fallback de erro: {ex}")
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
