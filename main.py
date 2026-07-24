@@ -53,26 +53,27 @@ async def process_whatsapp_message(body: Dict[str, Any]):
 
         logger.info(f"Mensagem recebida de {push_name} ({remote_jid}) - Tipo: {message_type}")
 
-        # 1. Resolucao Inteligente da Empresa no Supabase (por apikey, instance ou fallback)
+        # 1. Indicador de presenca imediata no WhatsApp (digitando... ou gravando audio...)
+        presence_type = "recording" if message_type == "audioMessage" else "composing"
+        await evolution_service.send_presence(instance, remote_jid, presence_type)
+
+        # 2. Resolucao Inteligente da Empresa no Supabase (por apikey, instance ou fallback)
         empresa_data = await supabase_service.get_empresa_by_identifier(apikey, instance)
         if not empresa_data:
             logger.warning(f"Empresa nao encontrada para apikey: {apikey}, instance: {instance}")
             return
 
-        empresa_id = empresa_data.get("id", empresa_data.get("id_empresa"))
+        empresa_id = empresa_data.get("id", 43)
         empresa_rows = empresa_data
 
-        # 2. Registrar cliente em clientes_whatsapp
+        # 3. Registrar cliente em clientes_whatsapp
         await supabase_service.registrar_cliente_se_nao_existir(empresa_id, remote_jid, push_name)
 
-        # 3. Verificar se transbordo humano esta ativo
+        # 4. Verificar se transbordo humano esta ativo
         cliente_db = await supabase_service.get_cliente_whatsapp(empresa_id, remote_jid)
         if cliente_db and cliente_db.get("transbordo_humano"):
             logger.info(f"Transbordo humano ativo para {remote_jid}. Ignorando IA.")
             return
-
-        # 4. Enviar sinal de 'digitando...' no WhatsApp
-        await evolution_service.send_presence(instance, remote_jid, "composing")
 
         # 5. Extrair conteudo da mensagem (Texto, Imagem, PDF ou Audio)
         user_message_text = ""
@@ -90,7 +91,10 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         if not user_message_text.strip():
             return
 
-        # 6. Executar o Agente Inteligente com OpenAI SDK / OpenRouter
+        # 6. Manter sinal de 'digitando...' ativado durante a resposta da IA
+        await evolution_service.send_presence(instance, remote_jid, presence_type)
+
+        # 7. Executar o Agente Inteligente com OpenAI SDK / OpenRouter
         reply_text = await agent_service.run_agent(
             empresa_data=empresa_data,
             empresa_rows=empresa_rows,
@@ -100,7 +104,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             instance=instance
         )
 
-        # 7. Disparar a resposta para o WhatsApp via Evolution API
+        # 8. Disparar a resposta para o WhatsApp via Evolution API
         if reply_text.strip():
             await evolution_service.send_text_message(instance, remote_jid, reply_text)
 
