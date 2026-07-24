@@ -54,4 +54,42 @@ class EvolutionService:
                 logger.error(f"Erro ao enviar mensagem de texto Evolution API: {e}")
                 return False
 
+    async def send_whatsapp_audio(self, instance: str, remote_jid: str, base64_audio: str) -> bool:
+        """Envia arquivo de áudio PTT/WhatsApp via Evolution API"""
+        url = f"{self.base_url}/message/sendWhatsAppAudio/{instance}"
+        number = remote_jid.split('@')[0]
+        payload = {
+            "number": number,
+            "audio": base64_audio,
+            "options": {
+                "delay": 1000,
+                "presence": "recording",
+                "encoding": True
+            }
+        }
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            try:
+                res = await client.post(url, headers=self.get_headers(), json=payload)
+                if res.status_code < 300:
+                    return True
+                else:
+                    logger.warning(f"sendWhatsAppAudio retornou status {res.status_code}. Tentando fallback sendMedia...")
+            except Exception as e:
+                logger.warning(f"Erro no sendWhatsAppAudio: {e}. Tentando fallback sendMedia...")
+
+            # Fallback para sendMedia
+            try:
+                url_media = f"{self.base_url}/message/sendMedia/{instance}"
+                payload_media = {
+                    "number": number,
+                    "media": base64_audio,
+                    "mediaType": "audio",
+                    "mimetype": "audio/mp3"
+                }
+                res_m = await client.post(url_media, headers=self.get_headers(), json=payload_media)
+                return res_m.status_code < 300
+            except Exception as ex:
+                logger.error(f"Erro no fallback sendMedia: {ex}")
+                return False
+
 evolution_service = EvolutionService()

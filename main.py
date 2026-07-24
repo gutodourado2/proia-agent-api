@@ -8,6 +8,7 @@ from services.supabase_service import supabase_service
 from services.evolution_service import evolution_service
 from services.vision_service import vision_service
 from services.agent_service import agent_service
+from services.tts_service import tts_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,7 +19,7 @@ logger = logging.getLogger("proia_agent_api")
 app = FastAPI(
     title="ProIA Delivery Agent API",
     version="1.0.0",
-    description="Microservico de Agente Inteligente de Delivery integrado com OpenAI SDK, Supabase e Evolution API"
+    description="Microservico de Agente Inteligente de Delivery integrado com OpenAI SDK, OpenRouter TTS, Supabase e Evolution API"
 )
 
 @app.get("/health")
@@ -65,6 +66,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
 
         empresa_id = empresa_data.get("id", 43)
         empresa_rows = empresa_data
+        voz_agente = empresa_data.get("voz_agente", "feminina")
 
         # 3. Registrar cliente em clientes_whatsapp
         await supabase_service.registrar_cliente_se_nao_existir(empresa_id, remote_jid, push_name)
@@ -91,7 +93,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         if not user_message_text.strip():
             return
 
-        # 6. Manter sinal de 'digitando...' ativado durante a resposta da IA
+        # 6. Manter sinal de 'digitando...' ou 'gravando audio...' ativado durante a resposta da IA
         await evolution_service.send_presence(instance, remote_jid, presence_type)
 
         # 7. Executar o Agente Inteligente com OpenAI SDK / OpenRouter
@@ -104,9 +106,16 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             instance=instance
         )
 
-        # 8. Disparar a resposta para o WhatsApp via Evolution API
+        # 8. Disparar a resposta para o WhatsApp via Evolution API (Texto e/ou Áudio TTS)
         if reply_text.strip():
+            # Enviar resposta em texto
             await evolution_service.send_text_message(instance, remote_jid, reply_text)
+
+            # Se a mensagem recebida foi audioMessage, enviar também o áudio voz PTT gerado
+            if message_type == "audioMessage":
+                audio_b64 = await tts_service.generate_speech_base64(reply_text, gender=voz_agente)
+                if audio_b64:
+                    await evolution_service.send_whatsapp_audio(instance, remote_jid, audio_b64)
 
     except Exception as e:
         logger.error(f"Erro no processamento da mensagem: {e}", exc_info=True)
