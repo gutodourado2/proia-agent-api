@@ -121,21 +121,15 @@ class SupabaseService:
         return await self.rpc("listar_categorias", {"p_empresa_id": str(p_empresa_id)})
 
     async def info_empresa(self, p_empresa_id: Any):
-        try:
-            emp_id_val = int(p_empresa_id) if str(p_empresa_id).isdigit() else 43
-        except Exception:
-            emp_id_val = 43
-        return await self.rpc("info_empresa", {"p_empresa_id": emp_id_val})
+        emp_id_str = str(p_empresa_id) if p_empresa_id else "43"
+        return await self.rpc("info_empresa", {"p_empresa_id": emp_id_str})
 
     async def buscar_enderecos_cliente(self, p_telefone: str):
         return await self.rpc("buscar_enderecos_cliente", {"p_telefone": str(p_telefone)})
 
     async def calcular_entrega_completa(self, p_empresa_id: Any, p_endereco: str):
-        try:
-            emp_id_val = int(p_empresa_id) if str(p_empresa_id).isdigit() else 43
-        except Exception:
-            emp_id_val = 43
-        return await self.rpc("calcular_entrega_completa", {"p_empresa_id": emp_id_val, "p_endereco": str(p_endereco)})
+        emp_id_str = str(p_empresa_id) if p_empresa_id else "43"
+        return await self.rpc("calcular_entrega_completa", {"p_empresa_id": emp_id_str, "p_endereco": str(p_endereco)})
 
     async def buscar_adicionais_produto(self, p_produto_id: int):
         return await self.rpc("buscar_adicionais_produto", {"p_produto_id": int(p_produto_id)})
@@ -147,13 +141,14 @@ class SupabaseService:
         return await self.rpc("consultar_pedido", {"p_pedido_id": int(p_pedido_id)})
 
     async def registrar_transbordo(self, p_empresa_id: Any, p_telefone: str, p_nome_cliente: str, p_motivo: str, p_mensagem_contexto: str, p_instancia: str):
+        emp_id_str = str(p_empresa_id) if p_empresa_id else "43"
         try:
-            emp_id_val = int(p_empresa_id) if str(p_empresa_id).isdigit() else 43
+            emp_id_numeric = int(emp_id_str) if emp_id_str.isdigit() else 43
         except Exception:
-            emp_id_val = 43
+            emp_id_numeric = 43
 
         payload = {
-            "p_empresa_id": emp_id_val,
+            "p_empresa_id": emp_id_numeric,
             "p_telefone": str(p_telefone),
             "p_nome_cliente": str(p_nome_cliente),
             "p_motivo": str(p_motivo),
