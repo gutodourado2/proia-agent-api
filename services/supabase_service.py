@@ -15,6 +15,21 @@ class SupabaseService:
             "Content-Type": "application/json"
         }
 
+    async def registrar_log(self, nivel: str, mensagem: str, detalhes: Optional[Dict[str, Any]] = None):
+        """Grava logs e erros de tempo de execucao do Coolify diretamente no Supabase em tempo real"""
+        url = f"{self.base_url}/rest/v1/logs_agente"
+        payload = {
+            "nivel": nivel,
+            "mensagem": mensagem,
+            "detalhes": detalhes or {},
+            "origem": "proia-agent-api"
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            try:
+                await client.post(url, headers=self.headers, json=payload)
+            except Exception as e:
+                logger.error(f"Erro ao registrar log no Supabase: {e}")
+
     async def rpc(self, function_name: str, payload: Dict[str, Any]) -> Any:
         url = f"{self.base_url}/rest/v1/rpc/{function_name}"
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -24,10 +39,10 @@ class SupabaseService:
                 return response.json()
             except Exception as e:
                 logger.error(f"Erro ao chamar RPC {function_name}: {e}")
+                await self.registrar_log("ERROR", f"Erro no RPC {function_name}", {"erro": str(e), "payload": payload})
                 return {"erro": str(e), "sucesso": False}
 
     async def get_empresa_by_identifier(self, apikey: str = "", instance: str = "") -> Optional[Dict[str, Any]]:
-        """Busca empresa diretamente pelo apikey (user_id) ou pela RPC get_empresa_by_instance"""
         if apikey and len(apikey) > 20:
             try:
                 url = f"{self.base_url}/rest/v1/empresa?user_id=eq.{apikey}&limit=1"
@@ -61,7 +76,6 @@ class SupabaseService:
         return None
 
     async def get_produto_imagem(self, produto_id: int) -> Optional[Dict[str, Any]]:
-        """Busca imagem_url e nome do produto diretamente na tabela produtos"""
         url = f"{self.base_url}/rest/v1/produtos?id=eq.{produto_id}&select=id,produto,imagem_url,preco&limit=1"
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
