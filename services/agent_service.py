@@ -15,7 +15,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "buscar_produtos",
-            "description": "Busca produtos no cardapio por nome, categoria ou palavra-chave.",
+            "description": "Busca produtos no cardapio por nome, categoria ou palavra-chave (ex: frango, costela, marmita).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -137,7 +137,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "consultar_pedido",
-            "description": "Consulta o status atual de um pedido existente.",
+            "description": "Consulta o status atual de um pedido existente no banco de dados.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -196,10 +196,10 @@ class AgentService:
                 messages = []
                 for row in data:
                     msg = row.get("message", {})
-                    role = "user" if msg.get("type") == "human" else "assistant"
+                    role = "user" if msg.get("type") == "human" else "ai"
                     content = msg.get("content", "")
                     if content:
-                        messages.append({"role": role, "content": content})
+                        messages.append({"role": "user" if role == "user" else "assistant", "content": content})
                 return messages
             except Exception as e:
                 logger.error(f"Erro ao ler n8n_chat_histories: {e}")
@@ -225,9 +225,8 @@ class AgentService:
 
     async def execute_tool(self, name: str, args: Dict[str, Any], default_user_id: str = "") -> str:
         try:
-            # Garantir que p_empresa_id sempre receba o UUID/user_id correto
-            if "p_empresa_id" in args and (not args["p_empresa_id"] or str(args["p_empresa_id"]).isdigit()):
-                args["p_empresa_id"] = default_user_id or args["p_empresa_id"]
+            if "p_empresa_id" in args:
+                args["p_empresa_id"] = default_user_id or str(args["p_empresa_id"])
 
             if name == "buscar_produtos":
                 res = await supabase_service.buscar_produtos(**args)
@@ -268,20 +267,23 @@ class AgentService:
         
         user_id_empresa = empresa_data.get("user_id") or "72055e41-9f72-4dac-97c2-7b5109890b50"
         id_numerico_empresa = empresa_data.get("id", 43)
+        slug_empresa = empresa_data.get("slug") or "cantinho-do-frango-assado"
+        cardapio_digital_url = f"https://app.proia.com.br/loja/{slug_empresa}"
 
         chosen_model = model_override or empresa_data.get("modelo_ia") or settings.MODEL_NAME
         client, model_name = self.get_client_for_model(chosen_model)
 
-        logger.info(f"Executando Agente para {contact_name} usando modelo: {model_name}")
+        logger.info(f"Executando Agente de Delivery para {contact_name} - Modelo: {model_name} - Loja: {slug_empresa}")
 
         system_prompt = f"""AGORA: {datetime.now().isoformat()}
-EMPRESA_USER_ID (Use este valor para p_empresa_id em buscar_produtos e listar_categorias): {user_id_empresa}
+EMPRESA_USER_ID: {user_id_empresa}
 EMPRESA_NUMERIC_ID: {id_numerico_empresa}
 EMPRESA_NOME: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}
+LOJA_SLUG: {slug_empresa}
+CARDAPIO_DIGITAL_URL: {cardapio_digital_url}
 LOJA_ENDEREÇO: {empresa_rows.get('endereco', '')}
 CLIENTE_NOME: {contact_name}
 CLIENTE_CONTATO: {remote_jid}
-LOJA_SLUG: {empresa_data.get('slug', '')}
 REGRAS_ESPECIFICAS_DA_LOJA: {empresa_data.get('regras_adicionais', '')}
 VALOR_POR_KM: {empresa_data.get('valor_por_km', 0)}
 VALOR_MINIMO_ENTREGA: {empresa_data.get('valor_minimo_entrega', 0)}
@@ -290,33 +292,63 @@ LOJA_FECHADA_MANUAL: {empresa_rows.get('loja_fechada_manual', False)}
 CHAVE_PIX: {empresa_rows.get('chave_pix', '')}
 MENSAGEM_PIX: {empresa_rows.get('mensagem_pix', '')}
 
-Você é o atendente virtual de delivery da {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}.
+Você é o atendente virtual DE DELIVERY profissional, direto e eficiente da {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}.
+Sua missão é realizar atendimentos rápidos, objetivos e converter pedidos com perfeição, sem erros e sem perda de tempo.
 
-══════════════════════════════════════════
-1. INSTRUÇÃO CRÍTICA DE FERRAMENTAS DO CARDÁPIO
-══════════════════════════════════════════
-- Quando o cliente pedir o cardápio ou consultar pratos, chame `listar_categorias` ou `buscar_produtos` passando o parâmetro `p_empresa_id` exatamente com a string: "{user_id_empresa}".
-- Nunca diga que não pode acessar o cardápio sem antes ter chamado a ferramenta `listar_categorias` com o UUID "{user_id_empresa}".
+════════════════════════════════════════════════════════════
+1. REGRA ABSOLUTA DE MÍDIA E CARDÁPIO DIGITAL
+════════════════════════════════════════════════════════════
+- NUNCA inclua links de imagem ou sintaxe de imagem em markdown (como `![nome](http...)`) em nenhuma mensagem. O WhatsApp não exibe imagens em markdown.
+- QUANDO O CLIENTE PEDIR O CARDÁPIO (ex: "me envia o cardápio", "cardapio"):
+  1. Chame a ferramenta `listar_categorias` com `p_empresa_id`: "{user_id_empresa}".
+  2. Apresente as categorias de forma limpa e elegante em texto.
+  3. Envie o Link Oficial do Cardápio Digital: {cardapio_digital_url}
 
-══════════════════════════════════════════
-2. REGRA CRÍTICA DE PAGAMENTO PIX E LEITURA DE COMPROVANTES
-══════════════════════════════════════════
-- Quando o cliente enviar o comprovante (mensagem iniciando com "[Cliente enviou um comprovante..."):
-  1. Leia atentamente o status, valor e recebedor.
-  2. Se o pedido JÁ FOI CRIADO via `criar_pedido_completo` (consulte o historico ou o pedido_id):
-     - Confirme o pagamento imediatamente: "Pagamento de R$ [valor] do Pedido #[pedido_id] confirmado com sucesso! ✅ Seu pedido foi RECEBIDO e já está sendo preparado pela cozinha. 🛵"
-  3. Se o pedido AINDA NÃO FOI CRIADO:
-     - Resgate os itens, endereco e taxa de entrega das mensagens anteriores do historico e chame `criar_pedido_completo`.
-     - Responda com a confirmacao final "Pedido #[pedido_id] confirmado! ✅".
-  4. NUNCA diga que o pedido esta vazio ao receber o comprovante. Os itens estao preservados no historico da conversa.
+════════════════════════════════════════════════════════════
+2. FLUXO DE PAGAMENTO PADRÃO VS PIX SOB DEMANDA
+════════════════════════════════════════════════════════════
+- FLUXO PADRÃO: O método padrão de pagamento é NA ENTREGA (Cartão de Crédito/Débito ou Dinheiro com troco). Pergunte a forma de pagamento na entrega apenas na etapa de finalização do pedido.
+- PIX SOMENTE SE SOLICITADO: NÃO peça pagamento por PIX no início. APENAS se o cliente pedir expressamente (ex: "quero pagar no pix", "envia o pix"):
+  - Envie a Chave PIX: {empresa_rows.get('chave_pix', '')}
+  - Envie as orientações da loja: {empresa_rows.get('mensagem_pix', '')}
+  - Solicite o envio do comprovante.
+- RECEBIMENTO DE COMPROVANTE: Quando a mensagem iniciar com "[Cliente enviou um comprovante...":
+  - Leia atentamente os dados extraídos da visão computacional (status, valor e recebedor).
+  - Se o pedido já tiver sido gravado via `criar_pedido_completo`: confirme que o pagamento do Pedido #[pedido_id] foi confirmado e que ele já está em preparo!
+  - Se o pedido ainda não tiver sido gravado: recupere os itens e o endereço das mensagens anteriores do histórico, execute `criar_pedido_completo` e confirme o pedido! NUNCA diga que o pedido está vazio.
 
-══════════════════════════════════════════
-3. REGRAS GERAIS DE DELIVERY
-══════════════════════════════════════════
-- Seja prático, direto e simpático (1-2 emojis no máximo).
-- NUNCA invente preços ou produtos indisponíveis.
-- Sempre pergunte o horário de entrega/retirada caso não informado.
-- Use `calcular_entrega_completa` para obter o valor oficial da entrega.
+════════════════════════════════════════════════════════════
+3. VENDA DIRETA: FRANGO INTEIRO E ACOMPANHAMENTOS/CORTESIAS
+════════════════════════════════════════════════════════════
+- Quando o cliente pedir "1 frango inteiro", ele JÁ QUER COMPRAR!
+- Chame imediatamente a ferramenta `buscar_adicionais_produto` para o produto Frango Inteiro.
+- Faça uma pergunta ultra direta e objetiva sobre o acompanhamento de cortesia:
+  Exemplo: "Frango Inteiro (R$ 70,00) anotado! Qual cortesia você prefere: Farofa ou Maionese?"
+- Se o cliente desejar adicionais pagos extras, inclua-os no pedido sem enrolação.
+
+════════════════════════════════════════════════════════════
+4. CONVERSÃO INTELIGENTE DE PESOS E GRAMAS (SUÍNA VS BOVINA)
+════════════════════════════════════════════════════════════
+- Entenda "meio quilo" / "1/2kg" como 500g.
+- Entenda "1 quilo" / "1kg" como 1000g.
+- Se o cliente solicitar uma quantidade que não existe exatamente no cardápio (ex: 400g):
+  - Sugira e ofereça a porção mais próxima disponível (ex: 500g suína ou bovina/gado).
+  - Exemplo: "Não temos porção de 400g exata, mas temos a porção de 500g (R$ XX). Podemos adicionar?"
+- DESAMBIGUAÇÃO DIRETA: Se o cliente pedir "costela" sem especificar o tipo, faça UMA ÚNICA Pergunta Objetiva:
+  Exemplo: "Você prefere Costela Suína (Porco) ou Bovina (Gado)?"
+  NÃO envie listas gigantes de produtos desnecessários.
+
+════════════════════════════════════════════════════════════
+5. RESPOSTAS OBJETIVAS, FECHAMENTO DE PEDIDO E ALTERAÇÕES PÓS-FECHAMENTO
+════════════════════════════════════════════════════════════
+- Respostas curtas, elegantes e objetivas (1 a 2 emojis no máximo).
+- SEMPRE ao adicionar um item ao carrinho, pergunte de forma ativa:
+  "Deseja adicionar mais algum item ou podemos calcular a entrega e finalizar?"
+- PEDIDO JÁ CONFIRMADO E SALVO:
+  - Quando gravar o pedido via `criar_pedido_completo`, informe o número do pedido e que ele foi enviado para a cozinha.
+  - Se o cliente quiser adicionar novos itens DEPOIS que o pedido foi fechado:
+    - Consulte o status do pedido via `consultar_pedido`.
+    - Se o pedido já estiver em preparo ou "saiu para entrega", informe educadamente que os novos itens serão adicionados em um NOVO PEDIDO (com nova taxa de entrega se o anterior já tiver saído).
 """
 
         history = await self.get_chat_history(session_id, limit=14)
@@ -364,7 +396,7 @@ Você é o atendente virtual de delivery da {empresa_data.get('categoria', '')} 
                     "content": tool_result_str
                 })
 
-        fallback_text = "Estou processando seu pedido, por favor confirme seus dados em seguida."
+        fallback_text = "Estou processando seu pedido. Como posso ajudar com mais alguma opção do cardápio?"
         await self.save_message_to_history(session_id, "assistant", fallback_text)
         return fallback_text
 
