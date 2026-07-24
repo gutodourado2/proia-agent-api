@@ -27,7 +27,20 @@ class SupabaseService:
                 return {"erro": str(e), "sucesso": False}
 
     async def get_empresa_by_identifier(self, apikey: str = "", instance: str = "") -> Optional[Dict[str, Any]]:
-        """Busca empresa usando a RPC SECURITY DEFINER get_empresa_by_instance"""
+        """Busca empresa diretamente pelo apikey (user_id) ou pela RPC get_empresa_by_instance"""
+        # 1. Tentar busca direta por user_id = apikey
+        if apikey and len(apikey) > 20:
+            try:
+                url = f"{self.base_url}/rest/v1/empresa?user_id=eq.{apikey}&limit=1"
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    res = await client.get(url, headers=self.headers)
+                    data = res.json()
+                    if data:
+                        return data[0]
+            except Exception as e:
+                logger.warning(f"Erro ao buscar empresa direta por user_id/apikey: {e}")
+
+        # 2. Tentar busca por instance usando a RPC
         search_target = instance or apikey
         if search_target:
             try:
@@ -37,7 +50,7 @@ class SupabaseService:
             except Exception as e:
                 logger.warning(f"Erro ao buscar empresa via RPC: {e}")
 
-        # Fallback de seguranca
+        # 3. Fallback de seguranca (Cantinho do Frango Assado)
         try:
             url_fallback = f"{self.base_url}/rest/v1/empresa?id=eq.43&limit=1"
             async with httpx.AsyncClient(timeout=10.0) as client:
