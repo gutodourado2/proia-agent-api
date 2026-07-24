@@ -8,19 +8,20 @@ logger = logging.getLogger("vision_service")
 
 class VisionService:
     def get_client_and_model(self):
+        api_key = settings.OPENAI_API_KEY or settings.OPENROUTER_API_KEY
         if settings.OPENAI_API_KEY:
             client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
             return client, "gpt-4o-mini"
         else:
             client = AsyncOpenAI(
                 base_url="https://openrouter.ai/api/v1",
-                api_key=settings.OPENROUTER_API_KEY,
+                api_key=api_key,
                 default_headers={
                     "HTTP-Referer": "https://proia.com.br",
                     "X-Title": "ProIA Delivery Agent"
                 }
             )
-            return client, "openai/gpt-4o-mini"
+            return client, "google/gemini-2.5-flash"
 
     async def analyze_image_or_receipt(self, base64_data: str, user_caption: str = "", message_type: str = "imageMessage") -> str:
         """
@@ -30,11 +31,11 @@ class VisionService:
         """
         prompt = (
             "Analise esta imagem enviada pelo cliente no WhatsApp.\n"
-            f"Legenda/Mensagem do cliente: '{user_caption}'.\n\n"
-            "COMO RESPONDER:\n"
+            f"Mensagem/Pergunta do cliente: '{user_caption}'.\n\n"
+            "INSTRUÇÕES:\n"
             "1. Se for um COMPROVANTE DE PAGAMENTO PIX, responda EXATAMENTE um JSON bruto:\n"
             "{\"tipo\": \"comprovante_pix\", \"valor\": 70.00, \"recebedor\": \"Nome\", \"status\": \"sucesso\"}\n\n"
-            "2. Se NÃO for comprovante (ex: foto de pessoa, produto, objeto ou duvida do cliente), responda com um texto explicativo em Portugues descrevendo o que ve na imagem e respondendo a pergunta do cliente de forma amigavel e util."
+            "2. Se NÃO for comprovante (ex: foto de pessoa, produto, objeto ou duvida do cliente), responda com uma descrição natural, simpática e objetiva em Português respondendo exatamente a pergunta do cliente sobre o que há na imagem."
         )
 
         try:
@@ -82,13 +83,13 @@ class VisionService:
                 pass
 
             if user_caption:
-                return f"[Imagem recebida com a legenda '{user_caption}'. Análise da imagem: {result_text}]"
-            return f"[Análise da imagem enviada pelo cliente: {result_text}]"
+                return f"[Análise da Imagem: {result_text}. Pergunta do cliente: '{user_caption}']"
+            return f"[Análise da Imagem: {result_text}]"
 
         except Exception as e:
-            logger.error(f"Erro na visao computacional: {e}")
+            logger.error(f"Erro na visão computacional: {e}")
             if user_caption:
                 return user_caption
-            return "[Cliente enviou uma imagem]"
+            return "Olá! Vi que você me mandou uma foto. Como posso te ajudar?"
 
 vision_service = VisionService()
