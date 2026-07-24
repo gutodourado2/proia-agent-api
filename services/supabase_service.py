@@ -27,46 +27,28 @@ class SupabaseService:
                 return {"erro": str(e), "sucesso": False}
 
     async def get_empresa_by_identifier(self, apikey: str = "", instance: str = "") -> Optional[Dict[str, Any]]:
-        """Busca empresa por user_id, por conexoes (instance) ou retorna a primeira ativa"""
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # 1. Tentar por user_id = apikey
-            if apikey:
-                try:
-                    url = f"{self.base_url}/rest/v1/empresa?user_id=eq.{apikey}&limit=1"
-                    res = await client.get(url, headers=self.headers)
-                    data = res.json()
-                    if data:
-                        return data[0]
-                except Exception as e:
-                    logger.warning(f"Erro ao buscar por apikey: {e}")
-
-            # 2. Tentar por conexoes (instance_name = instance)
-            if instance:
-                try:
-                    url = f"{self.base_url}/rest/v1/conexoes?nome_contato=eq.{instance}&limit=1"
-                    res = await client.get(url, headers=self.headers)
-                    conexoes_data = res.json()
-                    if conexoes_data and conexoes_data[0].get("user_id"):
-                        user_id = conexoes_data[0].get("user_id")
-                        url_emp = f"{self.base_url}/rest/v1/empresa?user_id=eq.{user_id}&limit=1"
-                        res_emp = await client.get(url_emp, headers=self.headers)
-                        emp_list = res_emp.json()
-                        if emp_list:
-                            return emp_list[0]
-                except Exception as e:
-                    logger.warning(f"Erro ao buscar por conexao instance: {e}")
-
-            # 3. Fallback: buscar a primeira empresa cadastrada
+        """Busca empresa usando a RPC SECURITY DEFINER get_empresa_by_instance"""
+        search_target = instance or apikey
+        if search_target:
             try:
-                url_fallback = f"{self.base_url}/rest/v1/empresa?limit=1"
+                empresa_data = await self.rpc("get_empresa_by_instance", {"p_instance": search_target})
+                if isinstance(empresa_data, dict) and empresa_data.get("user_id"):
+                    return empresa_data
+            except Exception as e:
+                logger.warning(f"Erro ao buscar empresa via RPC: {e}")
+
+        # Fallback de seguranca
+        try:
+            url_fallback = f"{self.base_url}/rest/v1/empresa?id=eq.43&limit=1"
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 res_fb = await client.get(url_fallback, headers=self.headers)
                 fb_data = res_fb.json()
                 if fb_data:
                     return fb_data[0]
-            except Exception as e:
-                logger.error(f"Erro no fallback da empresa: {e}")
-                
-            return None
+        except Exception as e:
+            logger.error(f"Erro no fallback da empresa: {e}")
+            
+        return None
 
     async def get_cliente_whatsapp(self, empresa_id: Any, telefone: str) -> Optional[Dict[str, Any]]:
         url = f"{self.base_url}/rest/v1/clientes_whatsapp?telefone=eq.{telefone}&limit=1"
