@@ -11,19 +11,21 @@ from services.evolution_service import evolution_service
 
 logger = logging.getLogger("agent_service")
 
-# Definicao das ferramentas (Tools) no formato OpenAI / OpenRouter Function Calling
+# ══════════════════════════════════════════════════════════
+# FERRAMENTAS (Tools) — OpenAI Function Calling
+# ══════════════════════════════════════════════════════════
 TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
             "name": "buscar_produtos",
-            "description": "Busca produtos no cardapio por nome, categoria ou palavra-chave (ex: frango, costela, marmita).",
+            "description": "Busca produtos no cardapio da loja por nome ou categoria. SEMPRE chame esta ferramenta primeiro quando precisar de informacoes sobre qualquer produto (preco, disponibilidade, ID para foto, etc).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "string", "description": "ID/User_ID da empresa (string UUID)"},
-                    "p_busca": {"type": "string", "description": "Nome do produto ou termo de busca (opcional)"},
-                    "p_categoria": {"type": "string", "description": "Nome da categoria (opcional)"},
+                    "p_empresa_id": {"type": "string", "description": "UUID da empresa"},
+                    "p_busca": {"type": "string", "description": "Termo de busca (ex: pepsi, frango, costela)"},
+                    "p_categoria": {"type": "string", "description": "Categoria (ex: Bebidas, Pratos)"},
                     "p_apenas_disponivel": {"type": "boolean", "default": True}
                 },
                 "required": ["p_empresa_id"]
@@ -38,7 +40,7 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "string", "description": "ID/User_ID da empresa (string UUID)"}
+                    "p_empresa_id": {"type": "string", "description": "UUID da empresa"}
                 },
                 "required": ["p_empresa_id"]
             }
@@ -48,14 +50,15 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "enviar_foto_produto",
-            "description": "Envia uma foto REAL e NATIVA do produto no WhatsApp como anexo. Use ESTA FERRAMENTA APENAS SE O CLIENTE SOLICITAR A FOTO EXPLICITAMENTE.",
+            "description": "Envia a foto REAL do produto direto no WhatsApp do cliente. IMPORTANTE: Voce DEVE primeiro chamar buscar_produtos para obter o produto_id CORRETO antes de chamar esta ferramenta.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "produto_id": {"type": "integer", "description": "ID numerico do produto (ex: 1113 para Frango Inteiro)"},
-                    "image_url": {"type": "string", "description": "URL publica da imagem do produto"},
-                    "caption": {"type": "string", "description": "Legenda com nome e preco do produto"}
-                }
+                    "produto_id": {"type": "integer", "description": "ID numerico EXATO do produto retornado por buscar_produtos"},
+                    "image_url": {"type": "string", "description": "URL da imagem (opcional, sera buscada automaticamente pelo produto_id)"},
+                    "caption": {"type": "string", "description": "Legenda (ex: Pepsi 1L - R$ 11,00)"}
+                },
+                "required": ["produto_id"]
             }
         }
     },
@@ -63,7 +66,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "info_empresa",
-            "description": "Retorna informacoes detalhadas da empresa (horarios, endereco, regras).",
+            "description": "Retorna informacoes da empresa como horario de funcionamento, endereco e regras.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -77,7 +80,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "buscar_enderecos_cliente",
-            "description": "Busca os enderecos salvos do cliente pelo numero de telefone.",
+            "description": "Busca enderecos salvos do cliente pelo telefone. Chame ANTES de pedir um novo endereco.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -91,12 +94,12 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "calcular_entrega_completa",
-            "description": "Calcula no Google Maps a distancia real de rota de transito em KM da loja ate o endereco do cliente, retornando a taxa oficial de entrega.",
+            "description": "Calcula distancia e taxa de entrega via Google Maps entre a loja e o endereco do cliente.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "string", "description": "User_ID / ID da empresa (string UUID)"},
-                    "p_endereco": {"type": "string", "description": "Endereco completo com rua, numero e bairro"}
+                    "p_empresa_id": {"type": "string", "description": "UUID da empresa"},
+                    "p_endereco": {"type": "string", "description": "Endereco completo do cliente"}
                 },
                 "required": ["p_empresa_id", "p_endereco"]
             }
@@ -106,11 +109,11 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "buscar_adicionais_produto",
-            "description": "Busca os acompanhamentos e adicionais configurados para um produto.",
+            "description": "Busca acompanhamentos e cortesias disponiveis para um produto (ex: arroz, feijao tropeiro como cortesia do frango).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_produto_id": {"type": "integer", "description": "ID do produto (bigint)"}
+                    "p_produto_id": {"type": "integer", "description": "ID do produto"}
                 },
                 "required": ["p_produto_id"]
             }
@@ -120,7 +123,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "criar_pedido_completo",
-            "description": "Grava o pedido final no banco de dados com todos os itens, adicionais, endereco e forma de pagamento.",
+            "description": "Cria o pedido final no banco com itens, adicionais, endereco e pagamento. Cada item deve incluir produto_id, quantidade e array de adicionais (opcao_adicional_id).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -135,7 +138,7 @@ TOOLS_SCHEMA = [
                                 "adicionais": {
                                     "type": "array",
                                     "items": {"type": "integer"},
-                                    "description": "IDs numericos das opcoes de adicionais/acompanhamentos escolhidas (campo opcao_adicional_id, ex: [1, 3])"
+                                    "description": "Array com os opcao_adicional_id retornados por buscar_adicionais_produto"
                                 }
                             },
                             "required": ["produto_id", "quantidade"]
@@ -148,7 +151,7 @@ TOOLS_SCHEMA = [
                     "p_longitude_entrega": {"type": "number"},
                     "p_distancia_km": {"type": "number"},
                     "p_telefone_cliente": {"type": "string"},
-                    "p_observacoes": {"type": "string", "description": "Observacoes, horario de entrega/retirada e status de pagamento"}
+                    "p_observacoes": {"type": "string", "description": "Horario de entrega/retirada + status pagamento PIX se aplicavel"}
                 },
                 "required": ["p_empresa_id", "p_itens", "p_endereco_entrega", "p_forma_pagamento", "p_taxa_entrega", "p_telefone_cliente"]
             }
@@ -158,11 +161,11 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "consultar_pedido",
-            "description": "Consulta o status atual de um pedido existente no banco de dados.",
+            "description": "Consulta status de um pedido existente.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_pedido_id": {"type": "integer", "description": "ID numerico do pedido"}
+                    "p_pedido_id": {"type": "integer", "description": "ID do pedido"}
                 },
                 "required": ["p_pedido_id"]
             }
@@ -172,7 +175,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "escalar_atendimento_humano",
-            "description": "Encaminha o atendimento para um atendente humano em caso de pedido explicito ou frustracao.",
+            "description": "Encaminha para atendente humano quando o cliente pedir ou em caso de frustracao.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -189,47 +192,51 @@ TOOLS_SCHEMA = [
     }
 ]
 
-# System prompt body (plain string, NO f-string, to avoid crashes with JSON curly braces)
+# ══════════════════════════════════════════════════════════
+# SYSTEM PROMPT (plain string — sem f-string para evitar crash com JSON)
+# ══════════════════════════════════════════════════════════
 SYSTEM_PROMPT_BODY = """
-Voce e o atendente virtual de delivery da __EMPRESA_NOME__.
-Sua missao e ajudar o cliente a escolher produtos, indicar acompanhamentos e cortesias e finalizar o pedido com rapidez, clareza e simpatia.
+Voce e a atendente virtual do __EMPRESA_NOME__, especialista em delivery via WhatsApp.
+Seu tom e caloroso, profissional e direto. Responda em portugues brasileiro natural.
+Use emojis com moderacao. Seja breve e objetiva.
 
-== 1. REGRA DE ADICIONAIS NO BANCO (CRITICO) ==
-- Sempre que o produto tiver acompanhamentos/cortesias (Frango Inteiro ID 1113, Meio Frango ID 1115, Marmita, etc.):
-  1. Chame buscar_adicionais_produto com o ID do produto para obter a lista de opcoes (opcao_adicional_id).
-  2. Ao chamar criar_pedido_completo, INCLUA OBRIGATORIAMENTE no parametro adicionais de cada item um ARRAY COM OS IDs NUMERICOS das opcoes escolhidas pelo cliente.
-  - Exemplo em p_itens: [{"produto_id": 1113, "quantidade": 1, "adicionais": [1]}] onde 1 e o opcao_adicional_id do Arroz, 3 para Feijao Tropeiro.
-  - NUNCA ENVIE o array adicionais vazio ou omita este campo para produtos com acompanhamentos!
+REGRAS ABSOLUTAS (siga TODAS sem excecao):
 
-== 2. VALIDACAO DO COMPROVANTE PIX ==
-- QUANDO O CLIENTE ENVIAR UM COMPROVANTE DE PIX:
-  1. Leia a analise do comprovante (Valor e Status).
-  2. Verifique se o valor do PIX e IGUAL OU SUPERIOR ao Valor Total do Pedido (Produtos + Frete).
-  3. Se o valor pago for MENOR: avise o cliente de forma educada.
-  4. Se o valor for valido: Adicione no campo p_observacoes: "PEDIDO PAGO VIA PIX (Comprovante Validado)" junto com o horario.
+1. NUNCA INVENTE IDs DE PRODUTOS.
+   - Para QUALQUER operacao que precise de um produto_id (foto, adicionais, pedido), voce DEVE PRIMEIRO chamar buscar_produtos para encontrar o produto e obter o ID CORRETO retornado pelo banco de dados.
+   - NUNCA use um ID de memoria ou suposicao. Sempre busque no banco.
 
-== 3. RETIRADA VS. ENTREGA E HORARIO ==
-- NA ETAPA DE FECHAMENTO, PERGUNTE OBRIGATORIAMENTE:
-  "O pedido sera para entrega no seu endereco ou para retirada na loja?"
-- SE RETIRADA: pergunte o horario desejado. Endereco da loja: __ENDERECO_LOJA__
-- SE ENTREGA: pergunte o horario ou se prefere entrega imediata.
-- Grave o horario acordado no campo p_observacoes ao criar o pedido.
+2. FOTOS DE PRODUTOS:
+   - Quando o cliente pedir foto de um produto, siga este fluxo OBRIGATORIO:
+     a) Chame buscar_produtos com o nome do produto para obter o ID correto.
+     b) Com o ID retornado, chame enviar_foto_produto.
+   - NUNCA gere markdown de imagem (![...](...)) no texto.
 
-== 4. ENDERECOS SALVOS E CALCULO DE FRETE ==
-- SEMPRE QUE FOR PARA ENTREGA:
-  1. Chame OBRIGATORIAMENTE buscar_enderecos_cliente com p_telefone: "__TELEFONE_CLIENTE__".
-  2. Se houver enderecos salvos: pergunte se deseja entregar no endereco encontrado.
-  3. Se NAO houver: peca Rua, Numero e Bairro.
-  4. Com o endereco confirmado, chame calcular_entrega_completa e exiba o frete oficial.
+3. ADICIONAIS E CORTESIAS:
+   - Frango Inteiro: 1 cortesia gratis. Meio Frango: 2 cortesias gratis.
+   - ANTES de fechar o pedido, chame buscar_adicionais_produto para obter os opcao_adicional_id.
+   - Ao chamar criar_pedido_completo, INCLUA o array adicionais com os IDs numericos corretos.
 
-== 5. ID DO PEDIDO NA FINALIZACAO ==
-- Sempre que criar o pedido via criar_pedido_completo, exiba OBRIGATORIAMENTE o numero do Pedido (#pedido_id) na mensagem final!
-- Exemplo: "Seu Pedido #194 foi finalizado com sucesso!"
+4. ENTREGA vs RETIRADA:
+   - Pergunte: "Sera para entrega ou retirada na loja?"
+   - Se RETIRADA: pergunte horario. Endereco da loja: __ENDERECO_LOJA__
+   - Se ENTREGA:
+     a) Chame buscar_enderecos_cliente (telefone: __TELEFONE_CLIENTE__).
+     b) Se tiver endereco salvo, confirme. Senao, peca Rua, Numero e Bairro.
+     c) Calcule frete com calcular_entrega_completa.
+     d) Pergunte horario desejado.
+   - Grave horario no campo p_observacoes.
 
-== 6. FOTOS E CARDAPIO DIGITAL ==
-- ZERO MARKDOWN IMAGES: NUNCA escreva ![nome](http...) no texto.
-- FOTOS NATIVAS: Se o cliente pedir foto, acione a ferramenta enviar_foto_produto.
-- CARDAPIO DIGITAL: Se solicitar o cardapio, envie o link limpo __CARDAPIO_URL__ .
+5. PAGAMENTO PIX:
+   - Se o cliente enviar comprovante: valide se o valor >= total (produtos + frete).
+   - Se valido: grave "PEDIDO PAGO VIA PIX (Comprovante Validado)" em p_observacoes.
+   - Se valor menor: avise educadamente.
+
+6. FINALIZACAO DO PEDIDO:
+   - Apos criar_pedido_completo, SEMPRE exiba o numero do pedido: "Seu Pedido #ID foi confirmado!"
+
+7. CARDAPIO DIGITAL:
+   - Link do cardapio: __CARDAPIO_URL__
 """
 
 class AgentService:
@@ -309,11 +316,11 @@ class AgentService:
                 if img_url and instance and remote_jid:
                     success = await evolution_service.send_image_message(instance, remote_jid, img_url, cap)
                     if success:
-                        return json.dumps({"sucesso": True, "mensagem": f"Foto oficial do produto enviada com sucesso no WhatsApp do cliente"}, ensure_ascii=False)
+                        return json.dumps({"sucesso": True, "mensagem": f"Foto do produto ID {produto_id} enviada no WhatsApp"}, ensure_ascii=False)
                     else:
                         return json.dumps({"sucesso": False, "erro": "Falha no envio da imagem pela Evolution API"}, ensure_ascii=False)
 
-                return json.dumps({"sucesso": False, "erro": "Parametros de foto insuficientes"}, ensure_ascii=False)
+                return json.dumps({"sucesso": False, "erro": f"Produto ID {produto_id} nao encontrado ou sem imagem"}, ensure_ascii=False)
 
             if name == "buscar_produtos":
                 res = await supabase_service.buscar_produtos(**args)
@@ -358,32 +365,32 @@ class AgentService:
         cardapio_digital_url = f"https://app.proia.com.br/loja/{slug_empresa}"
         endereco_loja_oficial = empresa_rows.get("endereco", "R. Sao Francisco, 2249 - Lot. Mimoso Doeste I, Luis Eduardo Magalhaes - BA")
 
-        chosen_model = model_override or empresa_data.get("modelo_ia") or settings.MODEL_NAME
+        chosen_model = model_override or settings.MODEL_NAME
         client, model_name = self.get_client_for_model(chosen_model)
 
-        logger.info(f"Executando Agente de Delivery para {contact_name} - Modelo: {model_name}")
+        logger.info(f"Agente: {contact_name} | Modelo: {model_name} | Loja: {slug_empresa}")
 
-        # Build system prompt header with dynamic variables (safe f-string, no JSON examples)
+        # Build system prompt header (safe f-strings, only simple variables)
         header = (
-            f"AGORA: {datetime.now().isoformat()}\n"
-            f"EMPRESA_USER_ID: {user_id_empresa}\n"
-            f"EMPRESA_NUMERIC_ID: {id_numerico_empresa}\n"
-            f"EMPRESA_NOME: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}\n"
-            f"LOJA_SLUG: {slug_empresa}\n"
-            f"CARDAPIO_DIGITAL_URL: {cardapio_digital_url}\n"
-            f"LOJA_ENDERECO_OFICIAL: {endereco_loja_oficial}\n"
-            f"CLIENTE_NOME: {contact_name}\n"
-            f"CLIENTE_CONTATO: {remote_jid}\n"
-            f"REGRAS_ESPECIFICAS_DA_LOJA: {empresa_data.get('regras_adicionais', '')}\n"
-            f"VALOR_POR_KM: {empresa_data.get('valor_por_km', 0)}\n"
-            f"VALOR_MINIMO_ENTREGA: {empresa_data.get('valor_minimo_entrega', 0)}\n"
-            f"DISTANCIA_MAXIMA_KM: {empresa_data.get('distancia_maxima_km', 0)}\n"
-            f"LOJA_FECHADA_MANUAL: {empresa_rows.get('loja_fechada_manual', False)}\n"
-            f"CHAVE_PIX: {empresa_rows.get('chave_pix', '')}\n"
-            f"MENSAGEM_PIX: {empresa_rows.get('mensagem_pix', '')}\n"
+            f"CONTEXTO DA SESSAO:\n"
+            f"Data/Hora: {datetime.now().isoformat()}\n"
+            f"Empresa ID: {id_numerico_empresa}\n"
+            f"Empresa UUID: {user_id_empresa}\n"
+            f"Loja: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}\n"
+            f"Slug: {slug_empresa}\n"
+            f"Endereco Loja: {endereco_loja_oficial}\n"
+            f"Cliente: {contact_name}\n"
+            f"Telefone: {session_id}\n"
+            f"Regras da Loja: {empresa_data.get('regras_adicionais', '')}\n"
+            f"Valor/km: {empresa_data.get('valor_por_km', 0)}\n"
+            f"Frete minimo: {empresa_data.get('valor_minimo_entrega', 0)}\n"
+            f"Dist. maxima: {empresa_data.get('distancia_maxima_km', 0)}\n"
+            f"Loja fechada: {empresa_rows.get('loja_fechada_manual', False)}\n"
+            f"Chave PIX: {empresa_rows.get('chave_pix', '')}\n"
+            f"Msg PIX: {empresa_rows.get('mensagem_pix', '')}\n\n"
         )
 
-        # Build prompt body using safe string replace (avoids f-string crash with JSON curly braces)
+        # Build prompt body using safe replace
         body = SYSTEM_PROMPT_BODY
         body = body.replace("__EMPRESA_NOME__", f"{empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}")
         body = body.replace("__ENDERECO_LOJA__", endereco_loja_oficial)
@@ -394,20 +401,20 @@ class AgentService:
 
         history = await self.get_chat_history(session_id, limit=14)
         
-        user_formatted_msg = f"Informacoes do contato: {contact_name}, {session_id}. Mensagem: {user_message}, Instancia: {instance}"
-        await self.save_message_to_history(session_id, "user", user_formatted_msg)
+        # Mensagem do usuario (simples e limpa para o LLM processar melhor)
+        await self.save_message_to_history(session_id, "user", user_message)
         
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
-        messages.append({"role": "user", "content": user_formatted_msg})
+        messages.append({"role": "user", "content": user_message})
 
-        for _ in range(5):
+        for iteration in range(8):
             response = await client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 tools=TOOLS_SCHEMA,
                 tool_choice="auto",
-                temperature=0.2
+                temperature=0.3
             )
 
             response_msg = response.choices[0].message
@@ -415,6 +422,7 @@ class AgentService:
 
             if not tool_calls:
                 raw_text = response_msg.content or ""
+                # Limpar markdown de imagem que pode vazar
                 clean_text = re.sub(r'!\[.*?\]\([^\)]+\)', '', raw_text)
                 clean_text = re.sub(r'https?://\S+\.(?:jpg|jpeg|png|webp)', '', clean_text)
                 clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
@@ -431,7 +439,7 @@ class AgentService:
                 except Exception:
                     fn_args = {}
                 
-                logger.info(f"Tool: {fn_name} args: {fn_args}")
+                logger.info(f"Tool call: {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:200]})")
                 tool_result_str = await self.execute_tool(fn_name, fn_args, default_user_id=user_id_empresa, instance=instance, remote_jid=remote_jid)
                 
                 messages.append({
@@ -441,7 +449,7 @@ class AgentService:
                     "content": tool_result_str
                 })
 
-        fallback_text = "Estou processando seu pedido. Como posso ajudar?"
+        fallback_text = "Estou aqui para ajudar! O que voce gostaria de pedir?"
         await self.save_message_to_history(session_id, "assistant", fallback_text)
         return fallback_text
 
