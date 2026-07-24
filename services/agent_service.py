@@ -52,10 +52,10 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "produto_id": {"type": "integer", "description": "ID numérico do produto (ex: 1113 para Frango Inteiro)"},
                     "image_url": {"type": "string", "description": "URL publica da imagem do produto"},
-                    "caption": {"type": "string", "description": "Nome e preco do produto para a legenda"}
-                },
-                "required": ["image_url"]
+                    "caption": {"type": "string", "description": "Legenda com nome e preco do produto"}
+                }
             }
         }
     },
@@ -250,10 +250,23 @@ class AgentService:
             if name == "enviar_foto_produto":
                 img_url = args.get("image_url", "")
                 cap = args.get("caption", "")
+                produto_id = args.get("produto_id")
+
+                if not img_url and produto_id:
+                    prod_data = await supabase_service.get_produto_imagem(int(produto_id))
+                    if prod_data:
+                        img_url = prod_data.get("imagem_url", "")
+                        if not cap:
+                            cap = f"{prod_data.get('produto')} - R$ {prod_data.get('preco')}"
+
                 if img_url and instance and remote_jid:
-                    await evolution_service.send_image_message(instance, remote_jid, img_url, cap)
-                    return json.dumps({"sucesso": True, "mensagem": "Foto enviada ao WhatsApp do cliente"}, ensure_ascii=False)
-                return json.dumps({"sucesso": False, "erro": "Parametros insuficientes para foto"}, ensure_ascii=False)
+                    success = await evolution_service.send_image_message(instance, remote_jid, img_url, cap)
+                    if success:
+                        return json.dumps({"sucesso": True, "mensagem": f"Foto oficial do produto enviada com sucesso no WhatsApp do cliente ({img_url})"}, ensure_ascii=False)
+                    else:
+                        return json.dumps({"sucesso": False, "erro": "Falha no envio da imagem pela Evolution API"}, ensure_ascii=False)
+
+                return json.dumps({"sucesso": False, "erro": "Parametros de foto insuficientes"}, ensure_ascii=False)
 
             if name == "buscar_produtos":
                 res = await supabase_service.buscar_produtos(**args)
@@ -330,35 +343,28 @@ Você é o atendente virtual DE DELIVERY profissional, direto, leve e muito obje
   Exemplo: "Frango Assado Inteiro (R$ 70,00) anotado! Ele acompanha 1 cortesia grátis: você prefere Arroz, Feijão Tropeiro, Macarrão ou Mandioca?"
 
 ════════════════════════════════════════════════════════════
-2. MENSAGEM LEVE E AMIGÁVEL DE PAGAMENTO
+2. ENVIO DE FOTOS REAIS DO PRODUTO (NATIVA DO WHATSAPP)
+════════════════════════════════════════════════════════════
+- PROIBIÇÃO ABSOLUTA DE MARKDOWN IMAGES: NUNCA escreva `![nome](http...)` no texto.
+- FOTOS SOMENTE SE O CLIENTE PEDIR: Quando o cliente pedir foto de um produto (ex: "me manda a imagem do frango inteiro", "tem foto?"):
+  1. Chame a ferramenta `enviar_foto_produto` passando `produto_id` do produto selecionado. A foto será enviada automaticamente como anexo nativo de imagem do WhatsApp.
+  2. Responda em texto curto confirmando o envio da foto.
+
+════════════════════════════════════════════════════════════
+3. MENSAGEM LEVE E AMIGÁVEL DE PAGAMENTO
 ════════════════════════════════════════════════════════════
 - NA ETAPA DE PAGAMENTO, USE EXATAMENTE ESTA ABORDAGEM LEVE E NATURAL:
   "Você pode pagar na entrega no Cartão (crédito/débito), Dinheiro ou PIX na entrega. Ou se preferir, pode pagar agora via PIX!"
 - SE O CLIENTE PREFERIR PAGAR AGORA VIA PIX:
-  - Envie a Chave PIX: {empresa_rows.get('chave_pix', '')}
-  - Envie o recebedor: {empresa_rows.get('mensagem_pix', '')}
-  - Solicite o envio do comprovante para validar e finalizar o pedido.
+  - Envie a Chave PIX: {empresa_rows.get('chave_pix', '')} e solicite o comprovante.
 - SE O CLIENTE PREFERIR PAGAR NA ENTREGA:
-  - Confirme a opção escolhida (Cartão, Dinheiro com troco, ou PIX na entrega) e finalize o pedido no banco via `criar_pedido_completo`.
+  - Confirme a opção (Cartão, Dinheiro com troco, ou PIX na entrega) e finalize o pedido no banco via `criar_pedido_completo`.
 
 ════════════════════════════════════════════════════════════
-3. REGRA RIGOROSA DE ENDEREÇO E CÁLCULO DE FRETE
+4. CÁLCULO DE FRETE E ENDEREÇO
 ════════════════════════════════════════════════════════════
-- PARA CALCULAR A DISTÂNCIA E O FRETE EXATO:
-  1. Se o cliente fornecer apenas o nome da rua ou bairro sem o número da casa, PEÇA O NÚMERO DA CASA/PRÉDIO.
-  2. Com o endereço completo (Rua, Número e Bairro), chame OBRIGATORIAMENTE `calcular_entrega_completa` com `p_empresa_id`: "{user_id_empresa}" e `p_endereco`: o endereço fornecido.
-  3. Apresente exatamente o valor de `taxa_entrega` retornado pela ferramenta. NUNCA invente frete da sua cabeça.
-
-════════════════════════════════════════════════════════════
-4. REGRA DE FOTOS E MÍDIAS (ZERO MARKDOWN IMAGES)
-════════════════════════════════════════════════════════════
-- PROIBIÇÃO ABSOLUTA DE MARKDOWN IMAGES: NUNCA escreva `![nome](http...)` nas suas mensagens de texto.
-- FOTOS SOMENTE QUANDO SOLICITADAS: APENAS se o cliente pedir foto (ex: "me manda foto da costela"), use a ferramenta `enviar_foto_produto`.
-
-════════════════════════════════════════════════════════════
-5. CARDÁPIO DIGITAL
-════════════════════════════════════════════════════════════
-- Ao pedir o cardápio, liste as categorias em texto limpo e envie o Link Oficial do Cardápio Digital: {cardapio_digital_url}
+- Se o cliente passar o endereço sem o número da casa, PEÇA O NÚMERO.
+- Com o endereço completo (Rua, Número e Bairro), chame OBRIGATORIAMENTE `calcular_entrega_completa` com `p_empresa_id`: "{user_id_empresa}" e informe o frete exato calculado.
 """
 
         history = await self.get_chat_history(session_id, limit=14)

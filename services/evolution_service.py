@@ -62,12 +62,19 @@ class EvolutionService:
             "number": number,
             "media": image_url,
             "mediaType": "image",
+            "mediatype": "image",
+            "mimetype": "image/jpeg",
             "caption": caption
         }
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             try:
                 res = await client.post(url, headers=self.get_headers(), json=payload)
-                return res.status_code < 300
+                if res.status_code < 300:
+                    logger.info(f"Foto enviada com sucesso via sendMedia para {remote_jid}")
+                    return True
+                else:
+                    logger.warning(f"sendMedia retornou status {res.status_code}: {res.text[:200]}")
+                    return False
             except Exception as e:
                 logger.error(f"Erro ao enviar foto nativa Evolution API: {e}")
                 return False

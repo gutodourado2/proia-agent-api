@@ -28,7 +28,6 @@ class SupabaseService:
 
     async def get_empresa_by_identifier(self, apikey: str = "", instance: str = "") -> Optional[Dict[str, Any]]:
         """Busca empresa diretamente pelo apikey (user_id) ou pela RPC get_empresa_by_instance"""
-        # 1. Tentar busca direta por user_id = apikey
         if apikey and len(apikey) > 20:
             try:
                 url = f"{self.base_url}/rest/v1/empresa?user_id=eq.{apikey}&limit=1"
@@ -40,7 +39,6 @@ class SupabaseService:
             except Exception as e:
                 logger.warning(f"Erro ao buscar empresa direta por user_id/apikey: {e}")
 
-        # 2. Tentar busca por instance usando a RPC
         search_target = instance or apikey
         if search_target:
             try:
@@ -50,7 +48,6 @@ class SupabaseService:
             except Exception as e:
                 logger.warning(f"Erro ao buscar empresa via RPC: {e}")
 
-        # 3. Fallback de seguranca (Cantinho do Frango Assado)
         try:
             url_fallback = f"{self.base_url}/rest/v1/empresa?id=eq.43&limit=1"
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -62,6 +59,18 @@ class SupabaseService:
             logger.error(f"Erro no fallback da empresa: {e}")
             
         return None
+
+    async def get_produto_imagem(self, produto_id: int) -> Optional[Dict[str, Any]]:
+        """Busca imagem_url e nome do produto diretamente na tabela produtos"""
+        url = f"{self.base_url}/rest/v1/produtos?id=eq.{produto_id}&select=id,produto,imagem_url,preco&limit=1"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                res = await client.get(url, headers=self.headers)
+                data = res.json()
+                return data[0] if data else None
+            except Exception as e:
+                logger.error(f"Erro ao buscar imagem do produto {produto_id}: {e}")
+                return None
 
     async def get_cliente_whatsapp(self, empresa_id: Any, telefone: str) -> Optional[Dict[str, Any]]:
         url = f"{self.base_url}/rest/v1/clientes_whatsapp?telefone=eq.{telefone}&limit=1"

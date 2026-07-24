@@ -52,10 +52,10 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "produto_id": {"type": "integer", "description": "ID numérico do produto (ex: 1113 para Frango Inteiro)"},
                     "image_url": {"type": "string", "description": "URL publica da imagem do produto"},
-                    "caption": {"type": "string", "description": "Nome e preco do produto para a legenda"}
-                },
-                "required": ["image_url"]
+                    "caption": {"type": "string", "description": "Legenda com nome e preco do produto"}
+                }
             }
         }
     },
@@ -91,12 +91,12 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "calcular_entrega_completa",
-            "description": "Calcula a distancia em KM e a taxa oficial de entrega para o endereco.",
+            "description": "Calcula no Google Maps a distancia real de rota de transito em KM da loja ate o endereco do cliente, retornando a taxa oficial de entrega.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "p_empresa_id": {"type": "string", "description": "ID da empresa"},
-                    "p_endereco": {"type": "string", "description": "Endereco completo do cliente (rua, numero, bairro)"}
+                    "p_empresa_id": {"type": "string", "description": "User_ID / ID da empresa (string UUID)"},
+                    "p_endereco": {"type": "string", "description": "Endereco completo com rua, numero e bairro"}
                 },
                 "required": ["p_empresa_id", "p_endereco"]
             }
@@ -216,7 +216,6 @@ class AgentService:
                     role = "user" if msg.get("type") == "human" else "ai"
                     content = msg.get("content", "")
                     if content:
-                        # Limpar links markdown de fotos do historico antigo
                         clean_content = re.sub(r'!\[.*?\]\([^\)]+\)', '', content).strip()
                         messages.append({"role": "user" if role == "user" else "assistant", "content": clean_content})
                 return messages
@@ -227,7 +226,6 @@ class AgentService:
     async def save_message_to_history(self, session_id: str, role: str, content: str):
         url = f"{supabase_service.base_url}/rest/v1/n8n_chat_histories"
         msg_type = "human" if role == "user" else "ai"
-        # Limpar qualquer markdown de imagem antes de salvar
         clean_content = re.sub(r'!\[.*?\]\([^\)]+\)', '', content).strip()
         payload = {
             "session_id": session_id,
@@ -252,10 +250,23 @@ class AgentService:
             if name == "enviar_foto_produto":
                 img_url = args.get("image_url", "")
                 cap = args.get("caption", "")
+                produto_id = args.get("produto_id")
+
+                if not img_url and produto_id:
+                    prod_data = await supabase_service.get_produto_imagem(int(produto_id))
+                    if prod_data:
+                        img_url = prod_data.get("imagem_url", "")
+                        if not cap:
+                            cap = f"{prod_data.get('produto')} - R$ {prod_data.get('preco')}"
+
                 if img_url and instance and remote_jid:
-                    await evolution_service.send_image_message(instance, remote_jid, img_url, cap)
-                    return json.dumps({"sucesso": True, "mensagem": "Foto enviada ao WhatsApp do cliente"}, ensure_ascii=False)
-                return json.dumps({"sucesso": False, "erro": "Parametros insuficientes para foto"}, ensure_ascii=False)
+                    success = await evolution_service.send_image_message(instance, remote_jid, img_url, cap)
+                    if success:
+                        return json.dumps({"sucesso": True, "mensagem": f"Foto oficial do produto enviada com sucesso no WhatsApp do cliente ({img_url})"}, ensure_ascii=False)
+                    else:
+                        return json.dumps({"sucesso": False, "erro": "Falha no envio da imagem pela Evolution API"}, ensure_ascii=False)
+
+                return json.dumps({"sucesso": False, "erro": "Parametros de foto insuficientes"}, ensure_ascii=False)
 
             if name == "buscar_produtos":
                 res = await supabase_service.buscar_produtos(**args)
@@ -310,7 +321,7 @@ EMPRESA_NUMERIC_ID: {id_numerico_empresa}
 EMPRESA_NOME: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}
 LOJA_SLUG: {slug_empresa}
 CARDAPIO_DIGITAL_URL: {cardapio_digital_url}
-LOJA_ENDEREÇO: {empresa_rows.get('endereco', '')}
+LOJA_ENDEREÇO_ORIGEM: {empresa_rows.get('endereco', '')}
 CLIENTE_NOME: {contact_name}
 CLIENTE_CONTATO: {remote_jid}
 REGRAS_ESPECIFICAS_DA_LOJA: {empresa_data.get('regras_adicionais', '')}
@@ -322,40 +333,38 @@ CHAVE_PIX: {empresa_rows.get('chave_pix', '')}
 MENSAGEM_PIX: {empresa_rows.get('mensagem_pix', '')}
 
 Você é o atendente virtual DE DELIVERY profissional, direto, leve e muito objetivo da {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}.
-Sua missão é realizar atendimentos rápidos, amigáveis, sem textos longos e sem poluição visual.
 
 ════════════════════════════════════════════════════════════
-1. REGRA RIGOROSA DE FOTOS E MÍDIAS (ZERO MARKDOWN IMAGES)
+1. VENDA DIRETA E OFERTA IMEDIATA DE CORTESIAS / ADICIONAIS
 ════════════════════════════════════════════════════════════
-- PROIBIÇÃO ABSOLUTA DE MARKDOWN IMAGES: NUNCA escreva links de imagens ou a sintaxe `![nome](http...)` nas suas mensagens de texto. Isso deixa a conversa feia e poluída.
-- FOTOS SOMENTE QUANDO SOLICITADAS: NUNCA envie foto sem o cliente pedir. APENAS se o cliente pedir explicitamente (ex: "me manda foto da costela", "tem foto do frango?"):
-  - Use a ferramenta `enviar_foto_produto` passando o `image_url` do produto e a legenda. A foto será enviada como anexo de imagem nativa do WhatsApp!
+- QUANDO O CLIENTE ESCOLHER OU SOLICITAR UM PRODUTO (ex: 1 Frango Inteiro, Meio Frango, Marmita):
+  1. Chame IMEDIATAMENTE a ferramenta `buscar_adicionais_produto` com o ID do produto selecionado.
+  2. MENSAGEM IMEDIATA DE CORTESIA: Mencione de forma clara e objetiva na própria resposta quais são as opções de cortesia/acompanhamento grátis disponíveis.
+  Exemplo: "Frango Assado Inteiro (R$ 70,00) anotado! Ele acompanha 1 cortesia grátis: você prefere Arroz, Feijão Tropeiro, Macarrão ou Mandioca?"
 
 ════════════════════════════════════════════════════════════
-2. CARDÁPIO DIGITAL E RESPOSTAS LEVES
+2. ENVIO DE FOTOS REAIS DO PRODUTO (NATIVA DO WHATSAPP)
 ════════════════════════════════════════════════════════════
-- Quando o cliente pedir o cardápio (ex: "me envia o cardápio", "cardapio"):
-  1. Chame a ferramenta `listar_categorias` com `p_empresa_id`: "{user_id_empresa}".
-  2. Responda em um texto curto, limpo e direto com os nomes das categorias e seus preços principais.
-  3. Envie o Link do Cardápio Digital Oficial: {cardapio_digital_url}
+- PROIBIÇÃO ABSOLUTA DE MARKDOWN IMAGES: NUNCA escreva `![nome](http...)` no texto.
+- FOTOS SOMENTE SE O CLIENTE PEDIR: Quando o cliente pedir foto de um produto (ex: "me manda a imagem do frango inteiro", "tem foto?"):
+  1. Chame a ferramenta `enviar_foto_produto` passando `produto_id` do produto selecionado. A foto será enviada automaticamente como anexo nativo de imagem do WhatsApp.
+  2. Responda em texto curto confirmando o envio da foto.
 
 ════════════════════════════════════════════════════════════
-3. VENDA DIRETA E PERGUNTAS OBJETIVAS
+3. MENSAGEM LEVE E AMIGÁVEL DE PAGAMENTO
 ════════════════════════════════════════════════════════════
-- Se o cliente pedir "1 frango inteiro", ele JÁ QUER COMPRAR!
-  - Chame `buscar_adicionais_produto` e pergunte de forma ultra objetiva:
-    "Frango Inteiro (R$ 70,00) anotado! Qual cortesia você prefere: Farofa ou Maionese?"
-- DESAMBIGUAÇÃO DE COSTELA OU PESOS:
-  - "meio quilo" / "1/2kg" = 500g.
-  - Se pedir "costela" sem dizer o tipo: pergunte de forma direta: "Você prefere Costela Suína (Porco) ou Bovina (Gado)?"
-  - NÃO envie textos longos, opções repetidas ou perguntas duplicadas.
+- NA ETAPA DE PAGAMENTO, USE EXATAMENTE ESTA ABORDAGEM LEVE E NATURAL:
+  "Você pode pagar na entrega no Cartão (crédito/débito), Dinheiro ou PIX na entrega. Ou se preferir, pode pagar agora via PIX!"
+- SE O CLIENTE PREFERIR PAGAR AGORA VIA PIX:
+  - Envie a Chave PIX: {empresa_rows.get('chave_pix', '')} e solicite o comprovante.
+- SE O CLIENTE PREFERIR PAGAR NA ENTREGA:
+  - Confirme a opção (Cartão, Dinheiro com troco, ou PIX na entrega) e finalize o pedido no banco via `criar_pedido_completo`.
 
 ════════════════════════════════════════════════════════════
-4. FINALIZAÇÃO E PAGAMENTO PADRÃO
+4. CÁLCULO DE FRETE E ENDEREÇO
 ════════════════════════════════════════════════════════════
-- Após definir os itens, pergunte: "Deseja adicionar mais algum item ou podemos calcular a entrega e finalizar?"
-- Pagamento padrão: NA ENTREGA (Cartão de Crédito/Débito ou Dinheiro com troco).
-- PIX SOMENTE SE SOLICITADO: Se o cliente pedir PIX expressamente ("manda a chave pix"), envie a chave {empresa_rows.get('chave_pix', '')} e solicite o comprovante.
+- Se o cliente passar o endereço sem o número da casa, PEÇA O NÚMERO.
+- Com o endereço completo (Rua, Número e Bairro), chame OBRIGATORIAMENTE `calcular_entrega_completa` com `p_empresa_id`: "{user_id_empresa}" e informe o frete exato calculado.
 """
 
         history = await self.get_chat_history(session_id, limit=14)
@@ -381,7 +390,6 @@ Sua missão é realizar atendimentos rápidos, amigáveis, sem textos longos e s
 
             if not tool_calls:
                 raw_text = response_msg.content or ""
-                # Filtro de limpeza cirurgica contra qualquer markdown image residual
                 clean_text = re.sub(r'!\[.*?\]\([^\)]+\)', '', raw_text)
                 clean_text = re.sub(r'https?://\S+\.(?:jpg|jpeg|png|webp)', '', clean_text)
                 clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()

@@ -135,6 +135,44 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.error(f"Erro ao receber webhook: {e}")
         raise HTTPException(status_code=400, detail="Payload invalido")
 
+@app.post("/webhook/status-pedido")
+async def status_pedido_webhook(request: Request):
+    """
+    Webhook acionado quando o status de um pedido e atualizado na loja (Supabase ou n8n).
+    Dispara a notificacao automatica para o WhatsApp do cliente com ZERO consumo de tokens LLM!
+    """
+    try:
+        body = await request.json()
+        record = body.get("record") or body.get("data") or body
+        pedido_id = record.get("id")
+        status = record.get("status")
+        telefone = record.get("telefone_cliente")
+        instance = record.get("instancia_whatsapp") or "vendas-72055e41-11"
+        nome_cliente = record.get("nome_cliente", "Cliente").split(" - ")[0]
+
+        if not telefone or not status:
+            return JSONResponse(status_code=400, content={"erro": "Dados insuficientes"})
+
+        remote_jid = telefone if "@s.whatsapp.net" in telefone else f"{telefone}@s.whatsapp.net"
+
+        STATUS_MENSAGENS = {
+            1: f"Olá, {nome_cliente}! 👨‍🍳 Seu Pedido #{pedido_id} foi RECEBIDO pelo restaurante e já está aguardando preparo!",
+            2: f"Olá, {nome_cliente}! 👨‍🍳🔥 Seu Pedido #{pedido_id} está EM PREPARO pela nossa equipe de cozinha!",
+            3: f"Olá, {nome_cliente}! 🛵💨 Notícia boa! Seu Pedido #{pedido_id} SAIU PARA ENTREGA! Nosso entregador já está a caminho do seu endereço.",
+            4: f"Olá, {nome_cliente}! 🎉 Seu Pedido #{pedido_id} foi ENTREGUE com sucesso! Agradecemos a preferência e bom apetite! 😋",
+            5: f"Olá, {nome_cliente}. Seu Pedido #{pedido_id} foi CANCELADO. Se tiver qualquer dúvida, estamos à disposição."
+        }
+
+        msg = STATUS_MENSAGENS.get(status)
+        if msg:
+            await evolution_service.send_text_message(instance, remote_jid, msg)
+            logger.info(f"Notificacao de status {status} enviada para pedido #{pedido_id} ({remote_jid})")
+
+        return JSONResponse(status_code=200, content={"sucesso": True, "status": status})
+    except Exception as e:
+        logger.error(f"Erro ao processar webhook status-pedido: {e}")
+        return JSONResponse(status_code=500, content={"erro": str(e)})
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

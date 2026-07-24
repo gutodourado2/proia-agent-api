@@ -27,49 +27,53 @@ class SupabaseService:
                 return {"erro": str(e), "sucesso": False}
 
     async def get_empresa_by_identifier(self, apikey: str = "", instance: str = "") -> Optional[Dict[str, Any]]:
-        """Busca empresa por user_id, por conexoes (instance) ou retorna a primeira ativa"""
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # 1. Tentar por user_id = apikey
-            if apikey:
-                try:
-                    url = f"{self.base_url}/rest/v1/empresa?user_id=eq.{apikey}&limit=1"
+        """Busca empresa diretamente pelo apikey (user_id) ou pela RPC get_empresa_by_instance"""
+        if apikey and len(apikey) > 20:
+            try:
+                url = f"{self.base_url}/rest/v1/empresa?user_id=eq.{apikey}&limit=1"
+                async with httpx.AsyncClient(timeout=10.0) as client:
                     res = await client.get(url, headers=self.headers)
                     data = res.json()
                     if data:
                         return data[0]
-                except Exception as e:
-                    logger.warning(f"Erro ao buscar por apikey: {e}")
+            except Exception as e:
+                logger.warning(f"Erro ao buscar empresa direta por user_id/apikey: {e}")
 
-            # 2. Tentar por conexoes (instance_name = instance)
-            if instance:
-                try:
-                    url = f"{self.base_url}/rest/v1/conexoes?nome_contato=eq.{instance}&limit=1"
-                    res = await client.get(url, headers=self.headers)
-                    conexoes_data = res.json()
-                    if conexoes_data and conexoes_data[0].get("emp_id"):
-                        emp_id = conexoes_data[0].get("emp_id")
-                        url_emp = f"{self.base_url}/rest/v1/empresa?id=eq.{emp_id}&limit=1"
-                        res_emp = await client.get(url_emp, headers=self.headers)
-                        emp_list = res_emp.json()
-                        if emp_list:
-                            return emp_list[0]
-                except Exception as e:
-                    logger.warning(f"Erro ao buscar por conexao instance: {e}")
-
-            # 3. Fallback: buscar a primeira empresa cadastrada no sistema
+        search_target = instance or apikey
+        if search_target:
             try:
-                url_fallback = f"{self.base_url}/rest/v1/empresa?limit=1"
+                empresa_data = await self.rpc("get_empresa_by_instance", {"p_instance": search_target})
+                if isinstance(empresa_data, dict) and empresa_data.get("user_id"):
+                    return empresa_data
+            except Exception as e:
+                logger.warning(f"Erro ao buscar empresa via RPC: {e}")
+
+        try:
+            url_fallback = f"{self.base_url}/rest/v1/empresa?id=eq.43&limit=1"
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 res_fb = await client.get(url_fallback, headers=self.headers)
                 fb_data = res_fb.json()
                 if fb_data:
                     return fb_data[0]
-            except Exception as e:
-                logger.error(f"Erro no fallback da empresa: {e}")
-                
-            return None
+        except Exception as e:
+            logger.error(f"Erro no fallback da empresa: {e}")
+            
+        return None
 
-    async def get_cliente_whatsapp(self, empresa_id: int, telefone: str) -> Optional[Dict[str, Any]]:
-        url = f"{self.base_url}/rest/v1/clientes_whatsapp?empresa_id=eq.{empresa_id}&telefone=eq.{telefone}&limit=1"
+    async def get_produto_imagem(self, produto_id: int) -> Optional[Dict[str, Any]]:
+        """Busca imagem_url e nome do produto diretamente na tabela produtos"""
+        url = f"{self.base_url}/rest/v1/produtos?id=eq.{produto_id}&select=id,produto,imagem_url,preco&limit=1"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                res = await client.get(url, headers=self.headers)
+                data = res.json()
+                return data[0] if data else None
+            except Exception as e:
+                logger.error(f"Erro ao buscar imagem do produto {produto_id}: {e}")
+                return None
+
+    async def get_cliente_whatsapp(self, empresa_id: Any, telefone: str) -> Optional[Dict[str, Any]]:
+        url = f"{self.base_url}/rest/v1/clientes_whatsapp?telefone=eq.{telefone}&limit=1"
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 res = await client.get(url, headers=self.headers)
@@ -79,11 +83,16 @@ class SupabaseService:
                 logger.error(f"Erro ao buscar cliente_whatsapp: {e}")
                 return None
 
-    async def registrar_cliente_se_nao_existir(self, empresa_id: int, telefone: str, nome: str) -> bool:
+    async def registrar_cliente_se_nao_existir(self, empresa_id: Any, telefone: str, nome: str) -> bool:
         url = f"{self.base_url}/rest/v1/clientes_whatsapp"
         headers = {**self.headers, "Prefer": "resolution=merge-duplicates"}
+        try:
+            emp_id_numeric = int(empresa_id) if str(empresa_id).isdigit() else 43
+        except Exception:
+            emp_id_numeric = 43
+
         payload = {
-            "empresa_id": empresa_id,
+            "empresa_id": emp_id_numeric,
             "telefone": telefone,
             "nome": f"{nome} - WhatsApp",
             "transbordo_humano": False
@@ -108,26 +117,28 @@ class SupabaseService:
 
     # --- AGENT TOOLS INTERFACE ---
 
-    async def buscar_produtos(self, p_empresa_id: int, p_busca: Optional[str] = None, p_categoria: Optional[str] = None, p_apenas_disponivel: bool = True):
+    async def buscar_produtos(self, p_empresa_id: Any, p_busca: Optional[str] = None, p_categoria: Optional[str] = None, p_apenas_disponivel: bool = True):
         payload = {
-            "p_empresa_id": int(p_empresa_id),
+            "p_empresa_id": str(p_empresa_id),
             "p_busca": p_busca or None,
             "p_categoria": p_categoria or None,
             "p_apenas_disponivel": p_apenas_disponivel
         }
         return await self.rpc("buscar_produtos", payload)
 
-    async def listar_categorias(self, p_empresa_id: int):
-        return await self.rpc("listar_categorias", {"p_empresa_id": int(p_empresa_id)})
+    async def listar_categorias(self, p_empresa_id: Any):
+        return await self.rpc("listar_categorias", {"p_empresa_id": str(p_empresa_id)})
 
-    async def info_empresa(self, p_empresa_id: int):
-        return await self.rpc("info_empresa", {"p_empresa_id": int(p_empresa_id)})
+    async def info_empresa(self, p_empresa_id: Any):
+        emp_id_str = str(p_empresa_id) if p_empresa_id else "43"
+        return await self.rpc("info_empresa", {"p_empresa_id": emp_id_str})
 
     async def buscar_enderecos_cliente(self, p_telefone: str):
         return await self.rpc("buscar_enderecos_cliente", {"p_telefone": str(p_telefone)})
 
-    async def calcular_entrega_completa(self, p_empresa_id: int, p_endereco: str):
-        return await self.rpc("calcular_entrega_completa", {"p_empresa_id": int(p_empresa_id), "p_endereco": str(p_endereco)})
+    async def calcular_entrega_completa(self, p_empresa_id: Any, p_endereco: str):
+        emp_id_str = str(p_empresa_id) if p_empresa_id else "43"
+        return await self.rpc("calcular_entrega_completa", {"p_empresa_id": emp_id_str, "p_endereco": str(p_endereco)})
 
     async def buscar_adicionais_produto(self, p_produto_id: int):
         return await self.rpc("buscar_adicionais_produto", {"p_produto_id": int(p_produto_id)})
@@ -138,9 +149,15 @@ class SupabaseService:
     async def consultar_pedido(self, p_pedido_id: int):
         return await self.rpc("consultar_pedido", {"p_pedido_id": int(p_pedido_id)})
 
-    async def registrar_transbordo(self, p_empresa_id: int, p_telefone: str, p_nome_cliente: str, p_motivo: str, p_mensagem_contexto: str, p_instancia: str):
+    async def registrar_transbordo(self, p_empresa_id: Any, p_telefone: str, p_nome_cliente: str, p_motivo: str, p_mensagem_contexto: str, p_instancia: str):
+        emp_id_str = str(p_empresa_id) if p_empresa_id else "43"
+        try:
+            emp_id_numeric = int(emp_id_str) if emp_id_str.isdigit() else 43
+        except Exception:
+            emp_id_numeric = 43
+
         payload = {
-            "p_empresa_id": int(p_empresa_id),
+            "p_empresa_id": emp_id_numeric,
             "p_telefone": str(p_telefone),
             "p_nome_cliente": str(p_nome_cliente),
             "p_motivo": str(p_motivo),
