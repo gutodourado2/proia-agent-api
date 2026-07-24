@@ -140,7 +140,10 @@ class SupabaseService:
         return await self.rpc("info_empresa", {"p_empresa_id": emp_id_str})
 
     async def buscar_enderecos_cliente(self, p_telefone: str):
-        return await self.rpc("buscar_enderecos_cliente", {"p_telefone": str(p_telefone)})
+        raw = await self.rpc("buscar_enderecos_cliente", {"p_telefone": str(p_telefone)})
+        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], dict) and "buscar_enderecos_cliente" in raw[0]:
+            return raw[0]["buscar_enderecos_cliente"]
+        return raw
 
     async def calcular_entrega_completa(self, p_empresa_id: Any, p_endereco: str):
         emp_id_str = str(p_empresa_id) if p_empresa_id else "43"
