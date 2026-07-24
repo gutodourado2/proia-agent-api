@@ -124,10 +124,16 @@ class SupabaseService:
             "p_categoria": p_categoria or None,
             "p_apenas_disponivel": p_apenas_disponivel
         }
-        return await self.rpc("buscar_produtos", payload)
+        raw = await self.rpc("buscar_produtos", payload)
+        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], dict) and "buscar_produtos" in raw[0]:
+            return raw[0]["buscar_produtos"]
+        return raw
 
     async def listar_categorias(self, p_empresa_id: Any):
-        return await self.rpc("listar_categorias", {"p_empresa_id": str(p_empresa_id)})
+        raw = await self.rpc("listar_categorias", {"p_empresa_id": str(p_empresa_id)})
+        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], dict) and "listar_categorias" in raw[0]:
+            return raw[0]["listar_categorias"]
+        return raw
 
     async def info_empresa(self, p_empresa_id: Any):
         emp_id_str = str(p_empresa_id) if p_empresa_id else "43"
@@ -141,7 +147,10 @@ class SupabaseService:
         return await self.rpc("calcular_entrega_completa", {"p_empresa_id": emp_id_str, "p_endereco": str(p_endereco)})
 
     async def buscar_adicionais_produto(self, p_produto_id: int):
-        return await self.rpc("buscar_adicionais_produto", {"p_produto_id": int(p_produto_id)})
+        raw = await self.rpc("buscar_adicionais_produto", {"p_produto_id": int(p_produto_id)})
+        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], dict) and "buscar_adicionais_produto" in raw[0]:
+            return raw[0]["buscar_adicionais_produto"]
+        return raw
 
     async def criar_pedido_completo(self, payload: Dict[str, Any]):
         return await self.rpc("criar_pedido_completo", payload)
