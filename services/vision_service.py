@@ -21,7 +21,7 @@ class VisionService:
                     "X-Title": "ProIA Delivery Agent"
                 }
             )
-            return client, "google/gemini-2.5-flash"
+            return client, "google/gemini-3.6-flash"
 
     async def analyze_image_or_receipt(self, base64_data: str, user_caption: str = "", message_type: str = "imageMessage") -> str:
         """
