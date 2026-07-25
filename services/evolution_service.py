@@ -83,9 +83,12 @@ class EvolutionService:
         """Envia arquivo de áudio PTT/WhatsApp via Evolution API"""
         url = f"{self.base_url}/message/sendWhatsAppAudio/{instance}"
         number = remote_jid.split('@')[0]
+        
+        clean_b64 = base64_audio.split(",")[-1] if "," in base64_audio else base64_audio
+
         payload = {
             "number": number,
-            "audio": base64_audio,
+            "audio": clean_b64,
             "options": {
                 "delay": 1000,
                 "presence": "recording",
@@ -96,20 +99,32 @@ class EvolutionService:
             try:
                 res = await client.post(url, headers=self.get_headers(), json=payload)
                 if res.status_code < 300:
+                    logger.info(f"Audio WhatsApp PTT enviado com sucesso para {remote_jid}")
                     return True
                 else:
-                    logger.warning(f"sendWhatsAppAudio retornou status {res.status_code}. Tentando fallback sendMedia...")
+                    logger.warning(f"sendWhatsAppAudio (clean base64) status {res.status_code}: {res.text[:200]}")
             except Exception as e:
-                logger.warning(f"Erro no sendWhatsAppAudio: {e}. Tentando fallback sendMedia...")
+                logger.warning(f"Erro no sendWhatsAppAudio clean base64: {e}")
 
-            # Fallback para sendMedia
+            # Fallback 1: Tentar com Data URI completo
+            try:
+                payload["audio"] = base64_audio if "data:audio" in base64_audio else f"data:audio/wav;base64,{clean_b64}"
+                res = await client.post(url, headers=self.get_headers(), json=payload)
+                if res.status_code < 300:
+                    logger.info(f"Audio WhatsApp PTT enviado com sucesso (Data URI) para {remote_jid}")
+                    return True
+            except Exception as e:
+                logger.warning(f"Erro no sendWhatsAppAudio Data URI: {e}")
+
+            # Fallback 2: sendMedia
             try:
                 url_media = f"{self.base_url}/message/sendMedia/{instance}"
+                mime = "audio/wav" if "wav" in base64_audio.lower() else "audio/mp3"
                 payload_media = {
                     "number": number,
-                    "media": base64_audio,
+                    "media": clean_b64,
                     "mediaType": "audio",
-                    "mimetype": "audio/mp3"
+                    "mimetype": mime
                 }
                 res_m = await client.post(url_media, headers=self.get_headers(), json=payload_media)
                 return res_m.status_code < 300
