@@ -155,8 +155,18 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             lat = loc_obj.get("degreesLatitude")
             lng = loc_obj.get("degreesLongitude")
             address = loc_obj.get("address") or loc_obj.get("name") or loc_obj.get("comment") or ""
-            user_message_text = f"[Cliente enviou localização GPS via WhatsApp: Latitude: {lat}, Longitude: {lng}. Endereço/Nome: '{address}']"
             await supabase_service.registrar_log("INFO", f"Localizacao GPS recebida: Lat {lat}, Lng {lng}, Endereco: {address}")
+            
+            session_id = remote_jid.split('@')[0] if remote_jid else ""
+            if session_id:
+                await agent_service.save_message_to_history(session_id, "user", f"[Cliente enviou localização GPS via WhatsApp: Lat {lat}, Lng {lng}, Endereço/Nome: '{address}']")
+            
+            # Enviar apenas mensagem cordial de agradecimento sem alterar o pedido ou recalcular valores
+            thanks_msg = "Muito obrigado por enviar sua localização! 📍 Já repassei para o nosso entregador para facilitar a sua entrega. 😊"
+            await evolution_service.send_text_message(instance, remote_jid, thanks_msg)
+            if session_id:
+                await agent_service.save_message_to_history(session_id, "assistant", thanks_msg)
+            return
 
         elif message_type == "conversation":
             user_message_text = message_obj.get("conversation", "")
