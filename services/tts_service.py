@@ -52,9 +52,11 @@ class TTSService:
         if not clean_text:
             return None
 
-        is_masculino = str(gender).lower().strip() in ["masculina", "masculino", "homem", "macho"]
-        openrouter_voice = "Kore" if is_masculino else "puck"
-        openai_voice = "cedar" if is_masculino else "coral"
+        is_feminina = str(gender).lower().strip() in ["feminina", "feminino", "mulher"]
+        openrouter_voice = "Kore" if is_feminina else "puck"
+        openai_voice = "coral" if is_feminina else "cedar"
+
+        logger.info(f"Voz configurada para a empresa: {gender} -> Voz OpenRouter: {openrouter_voice} | Voz OpenAI: {openai_voice}")
 
         api_key = self.get_api_key()
         if not api_key:
