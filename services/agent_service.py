@@ -151,9 +151,10 @@ TOOLS_SCHEMA = [
                     "p_longitude_entrega": {"type": "number"},
                     "p_distancia_km": {"type": "number"},
                     "p_telefone_cliente": {"type": "string"},
+                    "p_nome_cliente": {"type": "string", "description": "Nome de quem vai receber (entrega) ou retirar (retirada) o pedido"},
                     "p_observacoes": {"type": "string", "description": "Horario de entrega/retirada + status pagamento PIX se aplicavel"}
                 },
-                "required": ["p_empresa_id", "p_itens", "p_endereco_entrega", "p_forma_pagamento", "p_taxa_entrega", "p_telefone_cliente"]
+                "required": ["p_empresa_id", "p_itens", "p_endereco_entrega", "p_forma_pagamento", "p_taxa_entrega", "p_telefone_cliente", "p_nome_cliente"]
             }
         }
     },
@@ -181,6 +182,7 @@ TOOLS_SCHEMA = [
                 "properties": {
                     "p_pedido_id": {"type": "integer", "description": "ID do pedido a ser atualizado"},
                     "p_empresa_id": {"type": "integer"},
+                    "p_nome_cliente": {"type": "string", "description": "Nome atualizado do cliente"},
                     "p_observacoes": {"type": "string", "description": "Nova observacao ou horario de entrega atualizado (ex: Horario de entrega solicitado: 12:00h)"},
                     "p_itens": {
                         "type": "array",
@@ -294,7 +296,12 @@ REGRAS ABSOLUTAS (siga TODAS sem excecao):
      b) Com o ID retornado, chame enviar_foto_produto.
    - NUNCA gere markdown de imagem (![...](...)) no texto.
 
-6. ENTREGA vs RETIRADA, VALIDACAO DE RAIO E FRETE COM ZERO ERRO:
+6. IDENTIFICACAO DO NOME DO CLIENTE, ENTREGA vs RETIRADA E FRETE:
+   - REGRA OBRIGATORIA DO NOME DO CLIENTE:
+     * VOCE DEVE SEMPRE PERGUNTAR O NOME DO CLIENTE durante o atendimento!
+     * Se for ENTREGA: Pergunte "Qual o seu nome (ou de quem vai receber o pedido)?"
+     * Se for RETIRADA: Pergunte "Qual o seu nome (ou de quem vai retirar o pedido na loja)?"
+     * NUNCA crie o pedido como "Cliente WhatsApp" sem ter perguntado o nome antes. Passe o nome fornecido no parametro `p_nome_cliente` ao chamar `criar_pedido_completo` ou `atualizar_pedido_completo`. O banco formatara automaticamente como "{Nome} - WhatsApp" para ser impresso na comanda e salvo no sistema.
    - Pergunte: "Sera para entrega ou retirada na loja?"
    - Se RETIRADA: pergunte o horario desejado (entre 09:00 e 15:00). Endereco da loja: __ENDERECO_LOJA__
    - Se ENTREGA:
@@ -302,7 +309,7 @@ REGRAS ABSOLUTAS (siga TODAS sem excecao):
      b) Se tiver endereco salvo, confirme com o cliente. Senao, peca Rua/Avenida, Numero e Bairro/Residencial/Condominio.
      c) Execute `calcular_entrega_completa` passando o endereco.
      d) SE A FERRAMENTA RETORNAR `sucesso: false` E `erro: "FORA_DA_AREA"`:
-        Informe educadamente ao cliente que o endereco esta fora do raio maximo de entrega da loja (ex: "Seu endereco fica a {distancia_texto}, mas nosso limite de entrega e de {distancia_maxima_km} km"). Ofereca a opcao de fazer o pedido para Retirada na loja!
+        Informe educadamente ao cliente que o endereco esta fora do raio maximo de entrega da loja. Ofereca a opcao de fazer o pedido para Retirada na loja!
      e) SE A FERRAMENTA RETORNAR `sucesso: false` E `erro: "ENDERECO_NAO_ENCONTRADO"`:
         Solicite educadamente que o cliente informe a Rua, o Numero e o Bairro/Ponto de Referencia principal para refazer a busca.
      f) SE RETORNAR SUCESSO: Exiba SEMPRE o Bairro/Endereco confirmado, a Distancia oficial em km (`distancia_texto`) e a Taxa de Entrega calculada (`taxa_entrega`).
