@@ -174,6 +174,41 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "atualizar_pedido_completo",
+            "description": "Atualiza um pedido recem-criado mantendo o MESMO ID do pedido (ex: alterar horario de entrega, mudar acompanhamentos ou itens). Nao cria novo pedido.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "p_pedido_id": {"type": "integer", "description": "ID do pedido a ser atualizado"},
+                    "p_empresa_id": {"type": "integer"},
+                    "p_observacoes": {"type": "string", "description": "Nova observacao ou horario de entrega atualizado (ex: Horario de entrega solicitado: 12:00h)"},
+                    "p_itens": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "produto_id": {"type": "integer"},
+                                "quantidade": {"type": "integer"},
+                                "adicionais": {
+                                    "type": "array",
+                                    "items": {"type": "integer"}
+                                }
+                            },
+                            "required": ["produto_id", "quantidade"]
+                        }
+                    },
+                    "p_forma_pagamento": {"type": "string"},
+                    "p_troco_para": {"type": "number"},
+                    "p_taxa_entrega": {"type": "number"},
+                    "p_endereco_entrega": {"type": "string"}
+                },
+                "required": ["p_pedido_id", "p_empresa_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "escalar_atendimento_humano",
             "description": "ATENCAO: USAR APENAS SE O CLIENTE PEDIR EXPLICITAMENTE PARA FALAR COM UM ATENDENTE HUMANO (ex: 'quero falar com humano', 'atendente humano'). JAMAIS CHAME ESTA FERRAMENTA POR CONTA PROPRIA!",
             "parameters": {
@@ -272,7 +307,8 @@ REGRAS ABSOLUTAS (siga TODAS sem excecao):
         Solicite educadamente que o cliente informe a Rua, o Numero e o Bairro/Ponto de Referencia principal para refazer a busca.
      f) SE RETORNAR SUCESSO: Exiba SEMPRE o Bairro/Endereco confirmado, a Distancia oficial em km (`distancia_texto`) e a Taxa de Entrega calculada (`taxa_entrega`).
      g) Pergunte o horario desejado de entrega (entre 09:00 e 15:00).
-   - Grave o horario acordado no campo p_observacoes ao fechar o pedido.
+   - Grave o horario acordado no campo p_observacoes ao fechar o pedido (ex: "Horário de entrega solicitado: 12:00h").
+   - ATENCAO COM HORARIO: Use SEMPRE o horario MAIS RECENTE informado pelo cliente na conversa. Se o cliente pediu 11:00h e depois alterou para 12:00h, grave obrigatoriamente 12:00h! NUNCA use um horario antigo ou padrao de 13:30h.
 
 7. FLUXO OBRIGATORIO DE PAGAMENTO (PIX ANTECIPADO, DINHEIRO COM TROCO OU CARTAO):
    - SE O PAGAMENTO FOR PIX ANTECIPADO (cliente quer pagar via PIX no WhatsApp antes do preparo):
@@ -290,8 +326,13 @@ REGRAS ABSOLUTAS (siga TODAS sem excecao):
      a) Execute `criar_pedido_completo` imediatamente ao confirmar os dados e o horario.
      b) Exiba a mensagem final de confirmacao com o numero oficial do Pedido (#pedido_id).
 
-8. FINALIZACAO E NUMERO DO PEDIDO:
-   - A ferramenta `criar_pedido_completo` grava o pedido no Supabase e aciona a impressao automatica na cozinha da loja. Exiba SEMPRE o numero do Pedido (#pedido_id) retornado por ela! Exemplo: "Seu Pedido #201 foi confirmado e enviado para o preparo! 🎉"
+8. ALTERACAO INSTANTANEA DO MESMO PEDIDO (`atualizar_pedido_completo`):
+   - REGRA DE OURO DO MESMO PEDIDO: Se o pedido ja tiver sido criado nesta conversa (ex: Pedido #201) e o cliente pedir alteracao imediata (ex: mudar o horario de entrega para 12:00h, alterar acompanhamento, trocar endereco ou adicionar produto ao mesmo pedido):
+     * NUNCA chame `criar_pedido_completo` para gerar um novo ID (#202)!
+     * Execute a ferramenta `atualizar_pedido_completo` enviando `p_pedido_id` (ex: 201) e os dados atualizados.
+     * Isso ira atualizar o mesmo pedido no Supabase e re-enfileirar a comanda atualizada para impressao no balcao!
+     * Confirme a alteracao ao cliente mantendo o MESMO ID: "Seu Pedido #201 foi atualizado com sucesso! Novo horario de entrega: 12:00h. 🎉"
+   - NOVO PEDIDO: Apenas crie um novo pedido (com novo #ID) se for uma compra totalmente separada em outro momento.
 
 9. ATENDIMENTO EM AUDIO:
    - Se o cliente enviar mensagem de audio, responda de forma natural, amigavel e direta, pois sua resposta sera sintetizada e enviada em voz humana para o WhatsApp do cliente!
@@ -396,6 +437,8 @@ class AgentService:
                 res = await supabase_service.criar_pedido_completo(args)
             elif name == "consultar_pedido":
                 res = await supabase_service.consultar_pedido(**args)
+            elif name == "atualizar_pedido_completo":
+                res = await supabase_service.atualizar_pedido_completo(args)
             elif name == "escalar_atendimento_humano":
                 res = await supabase_service.registrar_transbordo(**args)
             else:
