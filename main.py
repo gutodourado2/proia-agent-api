@@ -192,8 +192,20 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                 instance=instance
             )
         except Exception as e:
-            await supabase_service.registrar_log("ERROR", f"Falha no Agente LLM: {e}", {"traceback": traceback.format_exc()[:500]})
-            reply_text = f"Olá, {push_name}! Estou aqui para te ajudar. Como posso te atender hoje?"
+            await supabase_service.registrar_log("ERROR", f"Falha no Agente LLM (tentando fallback OpenAI gpt-4o-mini): {e}", {"traceback": traceback.format_exc()[:500]})
+            try:
+                reply_text = await agent_service.run_agent(
+                    empresa_data=empresa_data,
+                    empresa_rows=empresa_rows,
+                    contact_name=push_name,
+                    remote_jid=remote_jid,
+                    user_message=user_message_text,
+                    instance=instance,
+                    model_override="gpt-4o-mini"
+                )
+            except Exception as ex:
+                await supabase_service.registrar_log("ERROR", f"Falha no fallback OpenAI: {ex}")
+                reply_text = "Temos sim! Nossos pratos e produtos estão disponíveis hoje. O que você gostaria de pedir?"
 
         # Filtro de seguranca absoluto: remover qualquer formato markdown de imagem antes de enviar ao WhatsApp
         clean_text = re.sub(r'!\[.*?\]\([^\)]+\)', '', reply_text)
