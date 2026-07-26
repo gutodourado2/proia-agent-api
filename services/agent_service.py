@@ -369,6 +369,11 @@ REGRAS ABSOLUTAS (siga TODAS sem excecao):
 class AgentService:
     def get_client_for_model(self, target_model: Optional[str] = None):
         model_name = target_model or settings.MODEL_NAME
+        # Se for um modelo nativo OpenAI para fallback (ex: gpt-4o, gpt-4o-mini)
+        if model_name in ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]:
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            return client, model_name
+
         if "/" in model_name or settings.LLM_PROVIDER.lower() == "openrouter" or (settings.OPENROUTER_API_KEY and not settings.OPENAI_API_KEY):
             api_key = settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY
             client = AsyncOpenAI(
