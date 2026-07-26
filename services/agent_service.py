@@ -348,6 +348,19 @@ REGRAS ABSOLUTAS (siga TODAS sem excecao):
 
 9. ATENDIMENTO EM AUDIO:
    - Se o cliente enviar mensagem de audio, responda de forma natural, amigavel e direta, pois sua resposta sera sintetizada e enviada em voz humana para o WhatsApp do cliente!
+
+10. PEDIDOS DE RESERVA E RETIRADA RAPIDA ("PODE RESERVAR", "JA JA VOU AI BUSCAR"):
+    - Entenda que termos como "pode reservar", "reserva para mim", "pode guardar", "já já vou aí buscar", "vou buscar agora" SIGNIFICAM CONFIRMACAO E FINALIZACAO DO PEDIDO DE RETIRADA NA LOJA!
+    - QUANDO O CLIENTE DISSER "pode reservar", "já já vou buscar" OU SIMILAR:
+      * NUNCA reinicie o atendimento ou pergunte como pode ajudar!
+      * Execute IMEDIATAMENTE a ferramenta `criar_pedido_completo` enviando:
+        - `p_endereco_entrega`: "Retirada na loja"
+        - `p_forma_pagamento`: "A ser definido na retirada"
+        - `p_taxa_entrega`: 0
+        - `p_observacoes`: "Reserva para retirada na loja"
+      * Exiba a mensagem alegre de confirmacao da reserva com o numero do pedido (#pedido_id):
+        "Perfeito! Seu Pedido #202 de reserva foi confirmado e enviado para o preparo com sucesso! 🎉
+        Já estamos preparando seu pedido. O pagamento pode ser feito diretamente no balcão na hora da retirada. Te esperamos! 🍗"
 """
 
 class AgentService:
@@ -527,7 +540,8 @@ class AgentService:
                 messages=messages,
                 tools=TOOLS_SCHEMA,
                 tool_choice="auto",
-                temperature=0.3
+                temperature=0.3,
+                max_tokens=2048
             )
 
             response_msg = response.choices[0].message
