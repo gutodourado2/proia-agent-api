@@ -410,10 +410,11 @@ class AgentService:
         instance: str,
         model_override: Optional[str] = None
     ) -> str:
-        session_id = remote_jid.split('@')[0]
-        
+        phone_number = remote_jid.split('@')[0] if remote_jid else ""
         user_id_empresa = empresa_data.get("user_id") or "72055e41-9f72-4dac-97c2-7b5109890b50"
         id_numerico_empresa = empresa_data.get("id", 43)
+        session_id = f"{id_numerico_empresa}_{phone_number}"
+        
         slug_empresa = empresa_data.get("slug") or "cantinho-do-frango-assado"
         cardapio_digital_url = f"https://app.proia.com.br/loja/{slug_empresa}"
         endereco_loja_oficial = empresa_rows.get("endereco", "R. Sao Francisco, 2249 - Lot. Mimoso Doeste I, Luis Eduardo Magalhaes - BA")
@@ -421,7 +422,7 @@ class AgentService:
         chosen_model = model_override or settings.MODEL_NAME
         client, model_name = self.get_client_for_model(chosen_model)
 
-        logger.info(f"Agente: {contact_name} | Modelo: {model_name} | Loja: {slug_empresa}")
+        logger.info(f"Agente: {contact_name} | Modelo: {model_name} | Loja ID: {id_numerico_empresa} ({slug_empresa}) | Session: {session_id}")
 
         # Build system prompt header (safe f-strings, only simple variables)
         header = (
@@ -433,7 +434,7 @@ class AgentService:
             f"Slug: {slug_empresa}\n"
             f"Endereco Loja: {endereco_loja_oficial}\n"
             f"Cliente: {contact_name}\n"
-            f"Telefone: {session_id}\n"
+            f"Telefone: {phone_number}\n"
             f"Horario e Regras da Loja: {empresa_data.get('regras_adicionais', 'Terça a Domingo das 09:00 às 15:00')}\n"
             f"Valor/km: {empresa_data.get('valor_por_km', 0)}\n"
             f"Frete minimo: {empresa_data.get('valor_minimo_entrega', 0)}\n"
@@ -447,7 +448,7 @@ class AgentService:
         body = SYSTEM_PROMPT_BODY
         body = body.replace("__EMPRESA_NOME__", f"{empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}")
         body = body.replace("__ENDERECO_LOJA__", endereco_loja_oficial)
-        body = body.replace("__TELEFONE_CLIENTE__", session_id)
+        body = body.replace("__TELEFONE_CLIENTE__", phone_number)
         body = body.replace("__CARDAPIO_URL__", cardapio_digital_url)
 
         system_prompt = header + body

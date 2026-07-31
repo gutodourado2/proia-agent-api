@@ -87,7 +87,11 @@ class SupabaseService:
                 return None
 
     async def get_cliente_whatsapp(self, empresa_id: Any, telefone: str) -> Optional[Dict[str, Any]]:
-        url = f"{self.base_url}/rest/v1/clientes_whatsapp?telefone=eq.{telefone}&limit=1"
+        try:
+            emp_id_str = str(empresa_id)
+        except Exception:
+            emp_id_str = "43"
+        url = f"{self.base_url}/rest/v1/clientes_whatsapp?empresa_id=eq.{emp_id_str}&telefone=eq.{telefone}&limit=1"
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 res = await client.get(url, headers=self.headers)
@@ -119,8 +123,12 @@ class SupabaseService:
                 logger.error(f"Erro ao registrar cliente whatsapp: {e}")
                 return False
 
-    async def set_transbordo_humano(self, telefone: str, status: bool = True) -> bool:
-        url = f"{self.base_url}/rest/v1/clientes_whatsapp?telefone=eq.{telefone}"
+    async def set_transbordo_humano(self, empresa_id: Any, telefone: str, status: bool = True) -> bool:
+        try:
+            emp_id_str = str(empresa_id)
+        except Exception:
+            emp_id_str = "43"
+        url = f"{self.base_url}/rest/v1/clientes_whatsapp?empresa_id=eq.{emp_id_str}&telefone=eq.{telefone}"
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 res = await client.patch(url, headers=self.headers, json={"transbordo_humano": status})
@@ -177,6 +185,12 @@ class SupabaseService:
 
     async def consultar_pedido(self, p_pedido_id: int):
         return await self.rpc("consultar_pedido", {"p_pedido_id": int(p_pedido_id)})
+
+    async def atualizar_pedido_completo(self, payload: Dict[str, Any]):
+        raw = await self.rpc("atualizar_pedido_completo", payload)
+        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], dict) and "atualizar_pedido_completo" in raw[0]:
+            return raw[0]["atualizar_pedido_completo"]
+        return raw
 
     async def registrar_transbordo(self, p_empresa_id: Any, p_telefone: str, p_nome_cliente: str, p_motivo: str, p_mensagem_contexto: str, p_instancia: str):
         emp_id_str = str(p_empresa_id) if p_empresa_id else "43"
