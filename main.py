@@ -2,6 +2,7 @@ import re
 import json
 import traceback
 import logging
+import httpx
 from typing import Dict, Any
 from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -13,6 +14,15 @@ from services.vision_service import vision_service
 from services.audio_service import audio_service
 from services.agent_service import agent_service
 from services.tts_service import tts_service
+
+async def forward_webhook_to_n8n(body: Dict[str, Any]):
+    if not settings.N8N_FORWARD_WEBHOOK_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(settings.N8N_FORWARD_WEBHOOK_URL, json=body)
+    except Exception as e:
+        logger.error(f"Erro ao repassar webhook para n8n ({settings.N8N_FORWARD_WEBHOOK_URL}): {e}")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -252,7 +262,16 @@ async def process_whatsapp_message(body: Dict[str, Any]):
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
-        background_tasks.add_task(process_whatsapp_message, body)
+        
+        # 1. Repassar 100% dos eventos do Evolution API para o webhook do n8n em segundo plano (QR Code, Conexao, Status, etc)
+        if settings.N8N_FORWARD_WEBHOOK_URL:
+            background_tasks.add_task(forward_webhook_to_n8n, body)
+
+        # 2. Se for evento de mensagem (messages.upsert), processar a IA de Vendas
+        event = body.get("event")
+        if event == "messages.upsert":
+            background_tasks.add_task(process_whatsapp_message, body)
+
         return JSONResponse(status_code=200, content={"status": "received"})
     except Exception as e:
         logger.error(f"Erro ao receber webhook: {e}")
