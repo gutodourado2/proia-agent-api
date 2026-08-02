@@ -47,6 +47,15 @@ async def health_check():
 
 async def process_whatsapp_message(body: Dict[str, Any]):
     instance = ""
+active_locks: Dict[str, asyncio.Lock] = {}
+
+def get_session_lock(session_id: str) -> asyncio.Lock:
+    if session_id not in active_locks:
+        active_locks[session_id] = asyncio.Lock()
+    return active_locks[session_id]
+
+async def process_whatsapp_message(body: Dict[str, Any]):
+    instance = ""
     remote_jid = ""
     empresa_id = None
     try:
@@ -82,17 +91,24 @@ async def process_whatsapp_message(body: Dict[str, Any]):
 
         empresa_id = empresa_data.get("id", 43)
         empresa_rows = empresa_data
+        nome_empresa_raw = empresa_data.get("nome_empresa", "")
+        
+        # Sanitizar push_name para nao salvar o nome da empresa como nome do cliente
+        if not push_name or push_name.strip() in ["Cantinho do Frango Assado", nome_empresa_raw, "null", "None", ""]:
+            push_name = "Cliente"
+
         voz_agente = empresa_data.get("voz_agente", "feminina")
         phone_number = remote_jid.split('@')[0] if remote_jid else ""
         session_id = f"{empresa_id}_{phone_number}"
 
-        # 2. REGRA ABSOLUTA: MENSAGEM ENVIADA MANUALMENTE PELO TELEFONE/INSTANCIA DA EMPRESA (fromMe == True)
-        # Quando o dono/atendente da loja digita manualmente no WhatsApp, a IA fica em SILÊNCIO TOTAL (zero resposta),
-        # mas registra o texto no historico de conversas para manter o contexto se o cliente responder depois.
-        if key.get("fromMe"):
-            manual_text = message_obj.get("conversation") or message_obj.get("extendedTextMessage", {}).get("text") or ""
-            if session_id and manual_text:
-                await agent_service.save_message_to_history(session_id, "assistant", f"[Atendente Humano da Loja]: {manual_text}")
+        # BLOQUEIO DE SESSÃO: Garantir que apenas uma requisição por cliente seja processada por vez
+        async with get_session_lock(session_id):
+            # 2. REGRA ABSOLUTA: MENSAGEM ENVIADA MANUALMENTE PELO TELEFONE/INSTANCIA DA EMPRESA (fromMe == True)
+            if key.get("fromMe"):
+                manual_text = message_obj.get("conversation") or message_obj.get("extendedTextMessage", {}).get("text") or ""
+                if session_id and manual_text:
+                    await agent_service.save_message_to_history(session_id, "assistant", f"[Atendente Humano da Loja]: {manual_text}")
+                return
         # Ignorar reações de emoji (ex: ❤️, 👍), mensagens editadas ou protocolos para evitar respostas duplicadas
         if message_type in ["reactionMessage", "editedMessage", "protocolMessage", "reaction"]:
             return
