@@ -93,7 +93,8 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             manual_text = message_obj.get("conversation") or message_obj.get("extendedTextMessage", {}).get("text") or ""
             if session_id and manual_text:
                 await agent_service.save_message_to_history(session_id, "assistant", f"[Atendente Humano da Loja]: {manual_text}")
-                await supabase_service.registrar_log("INFO", f"Mensagem manual da loja {empresa_id} para {phone_number} salva no historico. IA em silencio.")
+        # Ignorar reações de emoji (ex: ❤️, 👍), mensagens editadas ou protocolos para evitar respostas duplicadas
+        if message_type in ["reactionMessage", "editedMessage", "protocolMessage", "reaction"]:
             return
 
         await supabase_service.registrar_log("INFO", f"Mensagem recebida para loja {empresa_id} ({empresa_data.get('nome_empresa')}): {push_name} ({remote_jid})", {
