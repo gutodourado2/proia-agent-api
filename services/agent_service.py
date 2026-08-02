@@ -267,7 +267,9 @@ Voce e o atendente virtual humano do __EMPRESA_NOME__, especialista em vendas r�
 - Confirme os itens, adicionais e pergunte se deseja bebida/adicional.
 - Confirme o endereço e execute `calcular_entrega_completa`. Apresente o VALOR TOTAL (Produtos + Frete).
 - Pergunte a forma de pagamento: *"Como prefere pagar: PIX, Cartão ou Dinheiro?"*.
-- Ao definir o pagamento, EXECUTE `criar_pedido_completo` IMEDIATAMENTE e responda com o Pedido #ID!
+- 🛑 REGRA PROIBITIVA ABSOLUTA DO PIX: Se o cliente responder "PIX", "Pix" ou "pix", NUNCA envie a Chave PIX, NUNCA envie dados bancários, NUNCA envie texto de comprovante! Assuma PIX na entrega, EXECUTE `criar_pedido_completo` IMEDIATAMENTE e responda com a confirmação simples do Pedido #ID!
+- A Chave PIX é ESTRITAMENTE PROIBIDA de ser enviada a menos que o cliente faça uma pergunta direta de solicitação (ex: "Qual a chave PIX?", "Me passa o PIX pra pagar agora").
+- Ao definir a forma de pagamento, EXECUTE `criar_pedido_completo` IMEDIATAMENTE e responda com a confirmação simples com o Pedido #ID!
 
 REGRAS COMPLEMENTARES:
 1. CLIENTE NOVO VS. CLIENTE RECORRENTE:
@@ -445,9 +447,7 @@ class AgentService:
             f"Valor/km: {empresa_data.get('valor_por_km', 0)}\n"
             f"Frete minimo: {empresa_data.get('valor_minimo_entrega', 0)}\n"
             f"Dist. maxima: {empresa_data.get('distancia_maxima_km', 0)}\n"
-            f"Loja fechada manual: {empresa_rows.get('loja_fechada_manual', False)}\n"
-            f"Chave PIX: {empresa_rows.get('chave_pix', '')}\n"
-            f"Msg PIX: {empresa_rows.get('mensagem_pix', '')}\n\n"
+            f"Chave PIX (NUNCA ENVIAR A MENOS QUE SOLICITADO EXPLICITAMENTE): {empresa_rows.get('chave_pix', '')}\n\n"
         )
 
         # Build prompt body using safe replace
