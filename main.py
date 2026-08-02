@@ -189,11 +189,11 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             if session_id:
                 await agent_service.save_message_to_history(session_id, "user", f"[Cliente enviou localização GPS via WhatsApp: Lat {lat}, Lng {lng}, Endereço/Nome: '{address}']")
             
-            # Enviar apenas mensagem cordial de agradecimento sem alterar o pedido ou recalcular valores
-            thanks_msg = "Muito obrigado por enviar sua localização! 📍 Já repassei para o nosso entregador para facilitar a sua entrega. 😊"
-            await evolution_service.send_text_message(instance, remote_jid, thanks_msg)
+            # REGRA OBRIGATORIA: Pedir o endereco por escrito para calculo correto do frete
+            written_addr_msg = "Obrigado por enviar a localização GPS! 📍 Para calcularmos a taxa de entrega exata e registrar o seu pedido, por favor envie o seu *endereço completo por escrito (Rua, Número e Bairro)*. 😊"
+            await evolution_service.send_text_message(instance, remote_jid, written_addr_msg)
             if session_id:
-                await agent_service.save_message_to_history(session_id, "assistant", thanks_msg)
+                await agent_service.save_message_to_history(session_id, "assistant", written_addr_msg)
             return
 
         elif message_type == "conversation":
