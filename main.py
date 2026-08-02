@@ -192,7 +192,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         # 8. Manter sinal de 'digitando...' ou 'gravando audio...' ativado durante o processamento da IA
         await evolution_service.send_presence(instance, remote_jid, presence_type)
 
-        # 9. Executar o Agente Inteligente com OpenAI SDK / OpenRouter
+        # 9. Executar o Agente Inteligente (Tier 1: Lite -> Tier 2: Flash 3.6 -> Tier 3: GPT-4o)
         try:
             reply_text = await agent_service.run_agent(
                 empresa_data=empresa_data,
@@ -203,7 +203,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                 instance=instance
             )
         except Exception as e:
-            await supabase_service.registrar_log("ERROR", f"Falha no Agente LLM OpenRouter (Ativando fallback automatico para OpenAI gpt-4o): {e}", {"traceback": traceback.format_exc()[:500]})
+            await supabase_service.registrar_log("WARN", f"Modelo principal ({settings.MODEL_NAME}) falhou. Ativando Sub-Agente de Emergência ({settings.FALLBACK_MODEL_NAME}): {e}")
             try:
                 reply_text = await agent_service.run_agent(
                     empresa_data=empresa_data,
@@ -212,11 +212,23 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                     remote_jid=remote_jid,
                     user_message=user_message_text,
                     instance=instance,
-                    model_override="gpt-4o"
+                    model_override=settings.FALLBACK_MODEL_NAME
                 )
             except Exception as ex:
-                await supabase_service.registrar_log("ERROR", f"Falha no fallback OpenAI gpt-4o: {ex}")
-                reply_text = "Temos sim! Nossos pratos e produtos estão disponíveis hoje. O que você gostaria de pedir?"
+                await supabase_service.registrar_log("ERROR", f"Sub-Agente ({settings.FALLBACK_MODEL_NAME}) falhou. Ativando emergência OpenAI gpt-4o: {ex}")
+                try:
+                    reply_text = await agent_service.run_agent(
+                        empresa_data=empresa_data,
+                        empresa_rows=empresa_rows,
+                        contact_name=push_name,
+                        remote_jid=remote_jid,
+                        user_message=user_message_text,
+                        instance=instance,
+                        model_override="gpt-4o"
+                    )
+                except Exception as ex2:
+                    await supabase_service.registrar_log("ERROR", f"Falha no fallback de emergência gpt-4o: {ex2}")
+                    reply_text = "Temos sim! Nossos pratos e produtos estão disponíveis hoje. O que você gostaria de pedir?"
 
         # Filtro de seguranca absoluto: remover qualquer formato markdown de imagem antes de enviar ao WhatsApp
         clean_text = re.sub(r'!\[.*?\]\([^\)]+\)', '', reply_text)
