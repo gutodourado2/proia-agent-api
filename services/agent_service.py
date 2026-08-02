@@ -123,7 +123,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "criar_pedido_completo",
-            "description": "Cria o pedido final no banco com itens, adicionais, endereco e pagamento. Cada item deve incluir produto_id, quantidade e array de adicionais (opcao_adicional_id).",
+            "description": "Cria o pedido final no banco com itens, adicionais, endereco e pagamento. OBRIGATORIO chamar quando o cliente informar o horario da retirada ou confirmar o pagamento da entrega.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -144,15 +144,15 @@ TOOLS_SCHEMA = [
                             "required": ["produto_id", "quantidade"]
                         }
                     },
-                    "p_endereco_entrega": {"type": "string"},
-                    "p_forma_pagamento": {"type": "string"},
-                    "p_taxa_entrega": {"type": "number"},
+                    "p_endereco_entrega": {"type": "string", "description": "Endereco completo de entrega OU 'Retirada na loja' para retiradas"},
+                    "p_forma_pagamento": {"type": "string", "description": "Forma de pagamento ('Pagamento na retirada (Balcão)', 'Cartão', 'Dinheiro', 'PIX')"},
+                    "p_taxa_entrega": {"type": "number", "description": "Taxa de entrega (0 para retirada na loja)"},
                     "p_latitude_entrega": {"type": "number"},
                     "p_longitude_entrega": {"type": "number"},
                     "p_distancia_km": {"type": "number"},
                     "p_telefone_cliente": {"type": "string"},
-                    "p_nome_cliente": {"type": "string", "description": "Nome de quem vai receber (entrega) ou retirar (retirada) o pedido"},
-                    "p_observacoes": {"type": "string", "description": "Horario de entrega/retirada + status pagamento PIX se aplicavel"}
+                    "p_nome_cliente": {"type": "string", "description": "Nome do cliente"},
+                    "p_observacoes": {"type": "string", "description": "Horario de retirada/entrega (ex: Horario de retirada: 12:00h)"}
                 },
                 "required": ["p_empresa_id", "p_itens", "p_endereco_entrega", "p_forma_pagamento", "p_taxa_entrega", "p_telefone_cliente", "p_nome_cliente"]
             }
@@ -176,14 +176,14 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "atualizar_pedido_completo",
-            "description": "Atualiza um pedido recem-criado mantendo o MESMO ID do pedido (ex: alterar horario de entrega, mudar acompanhamentos ou itens). Nao cria novo pedido.",
+            "description": "Atualiza um pedido recem-criado mantendo o MESMO ID do pedido. Nao cria novo pedido.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "p_pedido_id": {"type": "integer", "description": "ID do pedido a ser atualizado"},
                     "p_empresa_id": {"type": "integer"},
-                    "p_nome_cliente": {"type": "string", "description": "Nome atualizado do cliente"},
-                    "p_observacoes": {"type": "string", "description": "Nova observacao ou horario de entrega atualizado (ex: Horario de entrega solicitado: 12:00h)"},
+                    "p_nome_cliente": {"type": "string"},
+                    "p_observacoes": {"type": "string"},
                     "p_itens": {
                         "type": "array",
                         "items": {
@@ -212,7 +212,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "escalar_atendimento_humano",
-            "description": "ATENCAO: USAR APENAS SE O CLIENTE PEDIR EXPLICITAMENTE PARA FALAR COM UM ATENDENTE HUMANO (ex: 'quero falar com humano', 'atendente humano'). JAMAIS CHAME ESTA FERRAMENTA POR CONTA PROPRIA!",
+            "description": "ATENCAO: USAR APENAS SE O CLIENTE PEDIR EXPLICITAMENTE PARA FALAR COM UM ATENDENTE HUMANO.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -230,7 +230,7 @@ TOOLS_SCHEMA = [
 ]
 
 # ══════════════════════════════════════════════════════════
-# SYSTEM PROMPT (plain string — sem f-string para evitar crash com JSON)
+# SYSTEM PROMPT
 # ══════════════════════════════════════════════════════════
 SYSTEM_PROMPT_BODY = """
 Voce e o atendente virtual humano do __EMPRESA_NOME__, especialista em vendas rápidas, objetivas e atendimento via WhatsApp.
@@ -249,7 +249,11 @@ Voce e o atendente virtual humano do __EMPRESA_NOME__, especialista em vendas r�
 ⛔ REGRA ABSOLUTA ZERO DESCULPAS E MENSAGENS DE ERRO:
 - É EXTREMAMENTE PROIBIDO dizer ao cliente que "o sistema está com instabilidade", "vou registrar manualmente" ou qualquer menção a erros técnicos.
 - O cliente JAMAIS deve ler qualquer mensagem sobre falha no sistema. Ele tem apenas que ser atendido e seu pedido gravado no banco!
-- É EXTREMAMENTE PROIBIDO dizer "Pedido confirmado" ou "Pedido reservado" SEM ter chamado a ferramenta `criar_pedido_completo` e recebido o número do pedido (#ID)!
+
+🛑 REGRA ABSOLUTA DE CRIAÇÃO DO PEDIDO (#ID OBRIGATÓRIO EM RETIRADA E ENTREGA):
+- É EXTREMAMENTE PROIBIDO dizer "Combinado", "Anotado" ou "Te aguardamos" SEM chamar a ferramenta `criar_pedido_completo` na mesma resposta!
+- Para RETIRADA NA LOJA: Assim que o cliente informar o horário da retirada (ex: "12h"), VOCÊ É ESTRITAMENTE OBRIGADO a executar `criar_pedido_completo` com `p_endereco_entrega="Retirada na loja"`, `p_taxa_entrega=0`, `p_forma_pagamento="Pagamento na retirada (Balcão)"`.
+- O seu texto final DEVE exibir obrigatoriamente o NÚMERO DO PEDIDO (#ID) gerado pela ferramenta (ex: `Seu Pedido #253 para retirada às 12h em nome de *Guto* no valor de *R$ 91,00* foi concluído com sucesso! 🎉`).
 
 🔄 FLUXO BASE OBRIGATÓRIO DE ATENDIMENTO (SIGA RIGOROSAMENTE AS 5 ETAPAS):
 
@@ -265,28 +269,30 @@ PASSO 3: RETIRADA OU ENTREGA
 - Pergunte: *"Será para entrega ou retirada na loja?"*
 - 🛍️ SE RETIRADA NA LOJA:
   * Pergunte o horário da retirada ("Qual o horário da retirada?").
-  * ASSIM QUE O CLIENTE INFORMAR O HORÁRIO DA RETIRADA (ex: "12h"), FINALIZE O PEDIDO IMEDIATAMENTE chamando `criar_pedido_completo`!
-  * 🛑 REGRA RÍGIDA: NÃO PERGUNTE A FORMA DE PAGAMENTO SE FOR RETIRADA! O pagamento é assumido no balcão na retirada.
+  * ASSIM QUE O CLIENTE INFORMAR O HORÁRIO DA RETIRADA (ex: "12h"), EXECUTE `criar_pedido_completo` IMEDIATAMENTE! NÃO PERGUNTE FORMA DE PAGAMENTO!
 - 🛵 SE ENTREGA:
   * Confirme o endereço e execute `calcular_entrega_completa`. Apresente a Taxa de Frete e o VALOR TOTAL SOMADO CORRETAMENTE (Produtos + Adicionais + Frete). NUNCA pergunte horário de entrega.
 
 PASSO 4: FORMA DE PAGAMENTO (APENAS PARA ENTREGA)
 - Para entregas, pergunte exatamente: *"Como prefere pagar: PIX, Cartão ou Dinheiro?"*
-- 📲 SE O CLIENTE RESPONDER "PIX":
-  * NÃO pergunte se é agora ou na entrega! NÃO envie a Chave PIX!
-  * Assuma PIX e FINALIZE O PEDIDO IMEDIATAMENTE chamando `criar_pedido_completo`!
-  * (A Chave PIX `CHAVE_PIX` SÓ é enviada se o cliente solicitar explicitamente: "Me manda a chave PIX").
+- 📲 SE O CLIENTE RESPONDER "PIX": Assuma PIX na entrega e FINALIZE O PEDIDO IMEDIATAMENTE chamando `criar_pedido_completo`! (A Chave PIX `CHAVE_PIX` SÓ é enviada se o cliente solicitar explicitamente).
 - 💳 SE RESPONDER "CARTÃO": Finalize o pedido IMEDIATAMENTE chamando `criar_pedido_completo`!
 - 💵 SE RESPONDER "DINHEIRO": Pergunte obrigatoriamente: *"Precisa de troco para quanto?"*. Ao receber o valor do troco, finalize o pedido chamando `criar_pedido_completo`.
 
 PASSO 5: FINALIZAÇÃO DE PEDIDO (#ID OBRIGATÓRIO)
 - A ferramenta `criar_pedido_completo` grava o pedido no banco de dados.
-- Exiba a mensagem final com o NOME do cliente, o NÚMERO DO PEDIDO (#ID) e o Resumo com o VALOR TOTAL EXATO (ex: `Seu Pedido #252 para retirada às 12h em nome de *Guto* no valor de *R$ 76,00* foi concluído com sucesso! 🎉`).
+- Exiba a mensagem final com o NOME do cliente, o NÚMERO DO PEDIDO (#ID) e o Resumo com o VALOR TOTAL EXATO.
 
 REGRAS COMPLEMENTARES:
 1. CLIENTE NOVO VS. CLIENTE RECORRENTE:
    - SE CLIENTE RECORRENTE/ANTIGO (Cliente Novo = False): Cumprimente pelo NOME (ex: "Olá Guto!"), vá DIRETO ao pedido. NUNCA envie o link do cardápio a menos que solicitado.
-   - SE CLIENTE NOVO (Cliente Novo = True): Faça uma recepção curta e envie o link do cardápio: 👉 __CARDAPIO_URL__
+   - SE CLIENTE NOVO (Cliente Novo = True): Faça uma recepção curta e envie o cardápio exatamente assim:
+     "Olá __CLIENTE_NOME__! Seja bem-vindo ao __EMPRESA_NOME__. 😊
+     
+     Confira nosso cardápio completo com fotos e preços aqui:
+     👉 __CARDAPIO_URL__
+     
+     Você pode escolher pelo link ou me pedir por aqui mesmo! 😊"
 
 2. ENDEREÇO SALVO & RECÁLCULO OBRIGATÓRIO DE FRETE:
    - Para ENTREGAS, consulte `buscar_enderecos_cliente` ou o histórico recente antes de pedir o endereço.
