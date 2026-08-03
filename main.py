@@ -1,5 +1,6 @@
 import re
 import json
+import asyncio
 import traceback
 import logging
 import httpx
@@ -42,6 +43,13 @@ app = FastAPI(
     description="Microservico de Agente Inteligente de Delivery integrado com OpenAI SDK, OpenRouter TTS, Supabase e Evolution API"
 )
 
+active_locks: Dict[str, asyncio.Lock] = {}
+
+def get_session_lock(session_id: str) -> asyncio.Lock:
+    if session_id not in active_locks:
+        active_locks[session_id] = asyncio.Lock()
+    return active_locks[session_id]
+
 @app.get("/health")
 async def health_check():
     return {
@@ -50,15 +58,6 @@ async def health_check():
         "evolution_url": settings.EVOLUTION_API_URL,
         "supabase_url": settings.SUPABASE_URL
     }
-
-async def process_whatsapp_message(body: Dict[str, Any]):
-    instance = ""
-active_locks: Dict[str, asyncio.Lock] = {}
-
-def get_session_lock(session_id: str) -> asyncio.Lock:
-    if session_id not in active_locks:
-        active_locks[session_id] = asyncio.Lock()
-    return active_locks[session_id]
 
 async def process_whatsapp_message(body: Dict[str, Any]):
     instance = ""
