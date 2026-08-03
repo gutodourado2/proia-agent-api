@@ -19,8 +19,14 @@ async def forward_webhook_to_n8n(body: Dict[str, Any]):
     if not settings.N8N_FORWARD_WEBHOOK_URL:
         return
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(settings.N8N_FORWARD_WEBHOOK_URL, json=body)
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
+            res = await client.post(settings.N8N_FORWARD_WEBHOOK_URL, json=body)
+            if res.status_code != 200:
+                await supabase_service.registrar_log("WARN", f"n8n webhook respondeu com status {res.status_code}: {res.text[:200]}")
     except Exception as e:
         logger.error(f"Erro ao repassar webhook para n8n ({settings.N8N_FORWARD_WEBHOOK_URL}): {e}")
 
