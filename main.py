@@ -237,7 +237,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                     model_override=settings.FALLBACK_MODEL_NAME
                 )
             except Exception as ex:
-                await supabase_service.registrar_log("ERROR", f"Sub-Agente ({settings.FALLBACK_MODEL_NAME}) falhou. Ativando emergência OpenAI gpt-4o: {ex}")
+                await supabase_service.registrar_log("ERROR", f"Sub-Agente ({settings.FALLBACK_MODEL_NAME}) falhou. Ativando emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex}")
                 try:
                     reply_text = await agent_service.run_agent(
                         empresa_data=empresa_data,
@@ -246,10 +246,10 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                         remote_jid=remote_jid,
                         user_message=user_message_text,
                         instance=instance,
-                        model_override="gpt-4o"
+                        model_override=settings.SECOND_FALLBACK_MODEL_NAME
                     )
                 except Exception as ex2:
-                    await supabase_service.registrar_log("ERROR", f"Falha no fallback de emergência gpt-4o: {ex2}")
+                    await supabase_service.registrar_log("ERROR", f"Falha no fallback de emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex2}")
                     reply_text = "Temos sim! Nossos pratos e produtos estão disponíveis hoje. O que você gostaria de pedir?"
 
         # Filtro de seguranca absoluto: remover qualquer formato markdown de imagem antes de enviar ao WhatsApp
