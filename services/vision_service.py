@@ -41,26 +41,19 @@ class VisionService:
         try:
             client, model_name = self.get_client_and_model()
 
-            if message_type == "documentMessage":
-                content = [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:application/pdf;base64,{base64_data}"
-                        }
+            # Verificar se os primeiros bytes em base64 sao PDF (%PDF -> JVBERi)
+            is_pdf = message_type == "documentMessage" or base64_data.startswith("JVBERi")
+            mime_type = "application/pdf" if is_pdf else "image/jpeg"
+
+            content = [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{base64_data}"
                     }
-                ]
-            else:
-                content = [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{base64_data}"
-                        }
-                    }
-                ]
+                }
+            ]
 
             response = await client.chat.completions.create(
                 model=model_name,
