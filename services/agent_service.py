@@ -3,6 +3,7 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import httpx
 from openai import AsyncOpenAI
 from config import settings
@@ -461,10 +462,24 @@ class AgentService:
 
         logger.info(f"Agente: {contact_name} | Modelo: {model_name} | Loja ID: {id_numerico_empresa} ({slug_empresa}) | Session: {session_id} | Novo: {eh_cliente_novo}")
 
+        # Calcular fuso horario local exato da loja no Brasil
+        fuso_loja = empresa_data.get("fuso_horario") or "America/Sao_Paulo"
+        try:
+            agora_local = datetime.now(ZoneInfo(fuso_loja))
+        except Exception:
+            agora_local = datetime.now(ZoneInfo("America/Sao_Paulo"))
+
+        dias_semana = {
+            "Monday": "Segunda-feira", "Tuesday": "Terça-feira", "Wednesday": "Quarta-feira",
+            "Thursday": "Quinta-feira", "Friday": "Sexta-feira", "Saturday": "Sábado", "Sunday": "Domingo"
+        }
+        dia_nome = dias_semana.get(agora_local.strftime("%A"), agora_local.strftime("%A"))
+        hora_local_str = f"{dia_nome}, {agora_local.strftime('%d/%m/%Y às %H:%M:%S')} (Fuso: {fuso_loja})"
+
         # Build system prompt header (safe f-strings, only simple variables)
         header = (
             f"CONTEXTO DA SESSAO DA LOJA:\n"
-            f"Data/Hora Atual: {datetime.now().isoformat()}\n"
+            f"Data/Hora Atual Local da Loja: {hora_local_str}\n"
             f"Empresa ID: {id_numerico_empresa}\n"
             f"Empresa UUID: {user_id_empresa}\n"
             f"Loja: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}\n"
