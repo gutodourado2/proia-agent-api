@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     SECOND_FALLBACK_MODEL_NAME: str = "google/gemini-3.1-flash-lite"
     PREVIOUS_MODEL_NAME: str = "google/gemini-3.6-flash"
     
+    # MODO TESTER STAGING (ISOLAMENTO TOTAL DE SEGURANÇA)
+    ENABLE_TESTER_MODE: bool = True
+    TESTER_PHONE_NUMBERS: list[str] = ["5577998238209", "557791662913"]
+    TESTER_EMPRESA_ID: int = 99
+    TESTER_MODEL_NAME: str = "deepseek/deepseek-v4-flash"
+    
     SUPABASE_URL: str = "https://askqkwvpjhotytmxcfqx.supabase.co"
     SUPABASE_SERVICE_ROLE_KEY: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFza3Frd3ZwamhvdHl0bXhjZnF4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NDcxNTMsImV4cCI6MjA4ODIyMzE1M30.GDFVXEYt0aZSMgZ6xhyrl9oA-DeKqP1i4JkyukWQ06A"
     EVOLUTION_API_URL: str = "https://evo.proia.com.br"

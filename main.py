@@ -94,6 +94,16 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             await supabase_service.registrar_log("ERROR", "Empresa nao encontrada", {"apikey": apikey, "instance": instance})
             return
 
+        phone_number = remote_jid.split('@')[0] if remote_jid else ""
+
+        # 🛡️ INTERCEPTAÇÃO DE SEGURANÇA MODO TESTER STAGING:
+        # Se o telefone pertencer à lista de testadores (ex: 5577998238209), redireciona a empresa para 99 (Staging)
+        is_tester = settings.ENABLE_TESTER_MODE and (phone_number in settings.TESTER_PHONE_NUMBERS)
+        if is_tester:
+            empresa_data_tester = await supabase_service.get_empresa_by_identifier(str(settings.TESTER_EMPRESA_ID), "")
+            if empresa_data_tester:
+                empresa_data = empresa_data_tester
+
         empresa_id = empresa_data.get("id", 43)
         empresa_rows = empresa_data
         nome_empresa_raw = empresa_data.get("nome_empresa", "")
@@ -103,7 +113,6 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             push_name = "Cliente"
 
         voz_agente = empresa_data.get("voz_agente", "feminina")
-        phone_number = remote_jid.split('@')[0] if remote_jid else ""
         session_id = f"{empresa_id}_{phone_number}"
 
         # BLOQUEIO DE SESSÃO: Garantir que apenas uma requisição por cliente seja processada por vez
@@ -214,7 +223,8 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         # 8. Manter sinal de 'digitando...' ou 'gravando audio...' ativado durante o processamento da IA
         await evolution_service.send_presence(instance, remote_jid, presence_type)
 
-        # 9. Executar o Agente Inteligente (Tier 1: Lite -> Tier 2: Flash 3.6 -> Tier 3: GPT-4o)
+        # 9. Executar o Agente Inteligente (Gemini em produção ou DeepSeek no Modo Tester)
+        chosen_model_initial = settings.TESTER_MODEL_NAME if is_tester else settings.MODEL_NAME
         try:
             reply_text = await agent_service.run_agent(
                 empresa_data=empresa_data,
@@ -222,7 +232,8 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                 contact_name=push_name,
                 remote_jid=remote_jid,
                 user_message=user_message_text,
-                instance=instance
+                instance=instance,
+                model_override=chosen_model_initial
             )
         except Exception as e:
             await supabase_service.registrar_log("WARN", f"Modelo principal ({settings.MODEL_NAME}) falhou. Ativando Sub-Agente de Emergência ({settings.FALLBACK_MODEL_NAME}): {e}")

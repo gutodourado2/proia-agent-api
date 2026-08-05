@@ -27,10 +27,16 @@
 
 ---
 
-## 2. Modelos de IA e Fallback Duplo
+## 2. Modelos de IA, Modo Tester Staging e Fallbacks
 
-- **Modelo Principal**: `google/gemini-3.6-flash` via OpenRouter SDK.
-- **Fallback Nativo OpenAI**: Se a OpenRouter falhar (erro 402, instabilidade ou timeout), o sistema faz failover automático para a API nativa da OpenAI usando `gpt-4o`.
+- **Modelo Oficial de Produção (Clientes Reais)**: `google/gemini-3.6-flash` via OpenRouter SDK.
+- **Modo Tester Staging (Isolamento Total por Telefone)**:
+  - **Telefones de Teste Cadastrados**: `5577998238209` e `557791662913`.
+  - **Loja Staging no Supabase**: `empresa_id: 99` (*Cantinho do Frango Assado - Testes Staging*).
+  - **Modelo em Teste/Calibração**: `deepseek/deepseek-v4-flash`.
+  - **Prompt Exclusivo**: `TESTER_SYSTEM_PROMPT_BODY` (calibrado para a arquitetura MoE do DeepSeek sem alterar 1 vírgula do prompt oficial do Gemini).
+  - **Garantias de Segurança**: Pedidos dos testes são salvos **apenas na loja 99** e **NUNCA são impressos na comanda da cozinha oficial (loja 43)**!
+- **Cascata de Fallbacks**: `google/gemini-3.6-flash` (Tier 1) ➔ `deepseek/deepseek-v4-flash` (Tier 2) ➔ `google/gemini-3.1-flash-lite` (Tier 3).
 - **Proteção de Reserva de Créditos**: O parâmetro `max_tokens=2048` está explicitamente configurado em todas as chamadas `chat.completions.create` para evitar recusas de reserva de saldo pela OpenRouter.
 
 ---
