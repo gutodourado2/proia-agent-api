@@ -17,19 +17,21 @@ from services.agent_service import agent_service
 from services.tts_service import tts_service
 
 async def forward_webhook_to_n8n(body: Dict[str, Any]):
-    if not settings.N8N_FORWARD_WEBHOOK_URL:
+    webhooks = [url for url in [settings.N8N_FORWARD_WEBHOOK_URL, settings.N8N_SECONDARY_FORWARD_WEBHOOK_URL] if url]
+    if not webhooks:
         return
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
-            res = await client.post(settings.N8N_FORWARD_WEBHOOK_URL, json=body)
-            if res.status_code != 200:
-                await supabase_service.registrar_log("WARN", f"n8n webhook respondeu com status {res.status_code}: {res.text[:200]}")
-    except Exception as e:
-        logger.error(f"Erro ao repassar webhook para n8n ({settings.N8N_FORWARD_WEBHOOK_URL}): {e}")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
+        for target_url in webhooks:
+            try:
+                res = await client.post(target_url, json=body)
+                if res.status_code != 200:
+                    await supabase_service.registrar_log("WARN", f"n8n webhook ({target_url}) respondeu status {res.status_code}: {res.text[:200]}")
+            except Exception as e:
+                logger.error(f"Erro ao repassar webhook para n8n ({target_url}): {e}")
 
 logging.basicConfig(
     level=logging.INFO,
