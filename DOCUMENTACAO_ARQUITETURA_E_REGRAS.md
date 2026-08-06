@@ -1,29 +1,37 @@
-# 📖 DOCUMENTAÇÃO COMPLETA DE ARQUITETURA E REGRAS DO AGENTE PROIA DELIVERY
+# 📖 DOCUMENTAÇÃO COMPLETA DE ARQUITETURA E REGRAS DO ECOSSISTEMA PROIA
 
-> **Data de Atualização**: 01/08/2026  
-> **Repositório**: `proia-agent-api` (Branch `main`)  
-> **Tecnologias**: Python FastAPI, OpenAI SDK, OpenRouter, Supabase PostgreSQL, Evolution API, Google Places & Distance Matrix API.
+> **Data de Atualização**: 06/08/2026  
+> **Repositórios**: `proia-agent-api` (Delivery) e `proia-agent-vendas` (Vendas B2B)  
+> **Tecnologias**: Python FastAPI, OpenAI SDK, OpenRouter, Supabase PostgreSQL, Evolution API, Google Places & Distance Matrix API, Nixpacks / Coolify.
 
 ---
 
 ## 📑 SUMÁRIO
-1. [Visão Geral e Arquitetura de Deploy](#1-visão-geral-e-arquitetura-de-deploy)
-2. [Modelos de IA e Fallback Duplo](#2-modelos-de-ia-e-fallback-duplo)
-3. [Webhook Único e Repasse Automático ao n8n](#3-webhook-único-e-repasse-automático-ao-n8n)
-4. [Isolamento Multitenant por Empresa (`session_id`)](#4-isolamento-multitenant-por-empresa-session_id)
-5. [Prompts Customizados por Empresa (`prompt_customizado`)](#5-prompts-customizados-por-empresa-prompt_customizado)
-6. [Geolocalização de Alta Precisão (Google Places API)](#6-geolocalização-de-alta-precisão-google-places-api)
-7. [Diretrizes de Atendimento Humanizado (1 a 3 Linhas)](#7-diretrizes-de-atendimento-humanizado-1-a-3-linhas)
-8. [Regras Específicas de Checkout e PIX](#8-regras-específicas-de-checkout-e-pix)
+1. [Visão Geral e Arquitetura de Deploy no Coolify](#1-visão-geral-e-arquitetura-de-deploy-no-coolify)
+2. [Modelos de IA, Modo Tester Staging e Fallbacks](#2-modelos-de-ia-modo-tester-staging-e-fallbacks)
+3. [Fusos Horários do Brasil (ZoneInfo) & Trigger Automático no Banco](#3-fusos-horários-do-brasil-zoneinfo--trigger-automático-no-banco)
+4. [Solução Anti-Reimpressão Duplicada de Comandas](#4-solução-anti-reimpressão-duplicada-de-comandas)
+5. [Inteligência de Janela de Tempo de 20 Minutos e Intenção de Pedidos](#5-inteligência-de-janela-de-tempo-de-20-minutos-e-intenção-de-pedidos)
+6. [Cálculo da Diferença PIX em Adições](#6-cálculo-da-diferença-pix-em-adições)
+7. [Leitura de Comprovantes PIX em PDF (documentMessage)](#7-leitura-de-comprovantes-pix-em-pdf-documentmessage)
+8. [Formatação Visível de Adicionais nas Comandas](#8-formatação-visível-de-adicionais-nas-comandas)
+9. [Duplo Webhook de Repasse para o n8n](#9-duplo-webhook-de-repasse-para-o-n8n)
+10. [Agente Autônomo de Vendas proIA Delivery (agente_venda_proia)](#10-agente-autônomo-de-vendas-proia-delivery-agente_venda_proia)
 
 ---
 
-## 1. Visão Geral e Arquitetura de Deploy
+## 1. Visão Geral e Arquitetura de Deploy no Coolify
 
-- **Repositório Git**: `/Users/gutemberguedourado/Documents/GitHub/proia-agent-api`
-- **Deploy**: Automático no Coolify a cada `git push origin main`.
-- **Evolution API**: `https://evo.proia.com.br` (Chave Global: `72055e41-9f72-4dac-97c2-7b5109890b50`).
-- **Supabase URL**: `https://askqkwvpjhotytmxcfqx.supabase.co`
+- **Serviço 1 - Agente Delivery Produção**:
+  - Repositório Git: `proia-agent-api` (Branch `main`)
+  - Porta: `8000` | Subdomínio: `https://api.proia.com.br`
+- **Serviço 2 - Agente Delivery Staging (Testes)**:
+  - Repositório Git: `proia-agent-api` (Branch `main`)
+  - Porta: `8000` | Subdomínio: `https://staging-api.proia.com.br`
+- **Serviço 3 - Agente de Vendas proIA Delivery**:
+  - Repositório Git: `proia-agent-vendas` (Branch `main`)
+  - Porta: `8001` | Subdomínio: `https://vendas-api.proia.com.br`
+- **Infraestrutura**: Evolution API (`https://evo.proia.com.br`), Supabase (`https://askqkwvpjhotytmxcfqx.supabase.co`).
 
 ---
 
@@ -37,75 +45,80 @@
   - **Prompt Exclusivo**: `TESTER_SYSTEM_PROMPT_BODY` (calibrado para a arquitetura MoE do DeepSeek sem alterar 1 vírgula do prompt oficial do Gemini).
   - **Garantias de Segurança**: Pedidos dos testes são salvos **apenas na loja 99** e **NUNCA são impressos na comanda da cozinha oficial (loja 43)**!
 - **Cascata de Fallbacks**: `google/gemini-3.6-flash` (Tier 1) ➔ `deepseek/deepseek-v4-flash` (Tier 2) ➔ `google/gemini-3.1-flash-lite` (Tier 3).
-- **Proteção de Reserva de Créditos**: O parâmetro `max_tokens=2048` está explicitamente configurado em todas as chamadas `chat.completions.create` para evitar recusas de reserva de saldo pela OpenRouter.
 
 ---
 
-## 3. Webhook Único e Repasse Automático ao n8n
+## 3. Fusos Horários do Brasil (ZoneInfo) & Trigger Automático no Banco
 
-- **Endpoint Único na Evolution API**: `http://tljykctcs216vr0dfr111zg7.72.61.54.174.sslip.io/webhook/whatsapp`
-- **Funcionamento**:
-  - 100% dos payloads recebidos (incluindo QR Code, Conexão, Instâncias e Mensagens) são **repassados em segundo plano (background tasks)** para a URL do n8n:  
-    `https://n8n.proia.com.br/webhook/42456d3e-1951-4f2b-9290-c08dee4a52d0`
-  - Se o evento for uma mensagem de chat de cliente (`messages.upsert`), o agente Python assume o atendimento e responde no WhatsApp.
-
----
-
-## 4. Isolamento Multitenant por Empresa (`session_id`)
-
-- **Chave de Sessão**: Para evitar o vazamento de contexto de conversas entre empresas diferentes, a chave de histórico `session_id` gravada em `public.n8n_chat_histories` e `public.clientes_whatsapp` é formatada estritamente como:
-  ```text
-  {EMPRESA_ID}_{TELEFONE_CLIENTE}
-  ```
-  *Exemplo*: `43_557798728307` (Cantinho do Frango) vs `4_557798728307` (ProIA Delivery / Adega).
-- **Conversão de `user_id` / `instance`**: A API converte a `apikey` (UUID `user_id`) ou o nome da instância (`vendas-f534e36d-17`) no `empresa_id` numérico correspondente através das tabelas `public.empresa` e `public.conexoes`.
+- **Trigger PostgreSQL (`trg_auto_fuso_horario_empresa`)**:
+  Sempre que uma loja for cadastrada ou atualizar a coluna `estado` em `public.empresa`, a função `fn_auto_mapear_fuso_horario_empresa` calcula e salva automaticamente a coluna `fuso_horario`:
+  - `AC` ➔ `America/Rio_Branco` (UTC-5)
+  - `AM`, `RO`, `RR` ➔ `America/Manaus` (UTC-4)
+  - `MT`, `MS` ➔ `America/Cuiaba` (UTC-4)
+  - `BA`, `SP`, `RJ`, `MG`, `DF`, `CE`, `PE`, `GO`, `PR`, `RS`, etc. ➔ `America/Sao_Paulo` (UTC-3 - Horário de Brasília)
+- **Data/Hora Local Exata no Prompt**:
+  A API calcula a data/hora local da loja via `ZoneInfo` e injeta no topo do System Prompt:
+  `Data/Hora Atual Local da Loja: Quarta-feira, 05/08/2026 às 20:28:15 (Fuso: America/Sao_Paulo)`
+- **Validação de Expediente**: O agente identifica se a loja está fechada e oferece o agendamento do pedido para o próximo dia útil.
 
 ---
 
-## 5. Prompts Customizados por Empresa (`prompt_customizado`)
+## 4. Solução Anti-Reimpressão Duplicada de Comandas
 
-- **Coluna no Supabase**: `public.empresa.prompt_customizado text`
-- **Injeção Dinâmica**: O conteúdo gravado neste campo é injetado no topo do prompt do sistema sob a seção `REGRAS ESPECIFICAS DA LOJA (PROMPT CUSTOMIZADO)`.
-- **Exemplo de Regra (Cantinho do Frango Assado - ID 43)**:
-  > *"Se o cliente pedir 'um frango' ou 'frango', assuma Frango Inteiro (ID 1113). Meio frango só quando o cliente especificar 'meio frango'. Acompanha 1 cortesia grátis para Frango Inteiro e 2 para Meio Frango."*
-
----
-
-## 6. Geolocalização de Alta Precisão (Google Places API)
-
-- **Procedure SQL**: `public.calcular_entrega_completa(p_empresa_id text, p_endereco text)`
-- **Passo 1 (Google Places Text Search API)**:
-  - Pesquisa o nome do local, condomínio, residencial ou estabelecimento dentro de Luís Eduardo Magalhães - BA (ex: *"Residencial Gabrigil"* -> `Residencial Gabrigil, R. Vinte e Quatro de Julho, 205 - Jardim Paraíso III`).
-- **Passo 2 (Google Distance Matrix API)**:
-  - Calcula a distância real de rodagem em km e tempo de percurso a partir das coordenadas exatas da loja.
-- **Recálculo OBRIGATÓRIO de Frete**:
-  - Mesmo ao confirmar um endereço antigo salvo, o agente executa obrigatoriamente `calcular_entrega_completa`. O frete NUNCA é reaproveitado de um pedido passado, sendo calculado sempre com base no `valor_por_km` atualizado da loja.
+- **Constraint `UNIQUE (pedido_id)` na `public.fila_impressao`**:
+  O banco proíbe fisicamente a criação de mais de 1 linha para o mesmo pedido na fila de impressão.
+- **Eliminação de INSERT Redundante**:
+  A função `criar_pedido_completo` não insere mais manualmente na `fila_impressao`, deixando essa responsabilidade unicamente para o Trigger oficial `trg_pedido_para_fila`.
+- **Checagem de Alteração Real (`v_houve_alteracao_real`)**:
+  A RPC `atualizar_pedido_completo` verifica se produtos, endereço ou taxa de entrega mudaram de fato antes de alterar o status da impressora para `pendente`.
 
 ---
 
-## 7. Diretrizes de Atendimento Humanizado (1 a 3 Linhas)
+## 5. Inteligência de Janela de Tempo de 20 Minutos e Intenção de Pedidos
 
-1. **Tamanho das Mensagens**: Respostas curtas de 1 a 3 linhas por balão. Foco em objetividade, clareza e conversa natural.
-2. **Cliente Novo vs. Cliente Recorrente**:
-   - **Novo**: Recepção curta + link do cardápio digital (`https://app.proia.com.br/loja/{slug}`).
-   - **Recorrente**: Chama pelo **Nome**, responde direto ao pedido e **não reenvia cardápio** a menos que solicitado.
-3. **Endereço Salvo**: Confirmação direta do endereço cadastrado (*"Vai ser para entregar na Rua X, 123 (Bairro Y)?"*).
-4. **Horário de Entrega vs. Retirada**:
-   - **Entrega**: Não pergunta horário (evita acúmulo no pico da cozinha).
-   - **Retirada**: Pergunta horário da retirada (*"Qual o horário da retirada?"*).
-5. **Dedução de Produtos**: "Frango" -> Frango Inteiro ID 1113. "Meio Frango" -> especificado.
-6. **Upsell Sucinto**: Uma pergunta rápida condizente (*"Deseja adicionar alguma bebida ou acompanhamento?"*).
-7. **Pré-Fechamento**: *"Posso concluir o pedido ou deseja adicionar alguma observação?"*
-8. **Identificação no Pedido Final**: Exibe obrigatoriamente o nome no encerramento (`Seu Pedido #249 em nome de *Guto* foi concluído com sucesso! 🎉`).
+- **Janela de 20 Minutos**:
+  Se o cliente fizer um novo pedido dentro de 20 minutos após o pedido anterior (e for do mesmo tipo de entrega), a RPC `criar_pedido_completo` redireciona para `atualizar_pedido_completo`.
+- **Pedidos > 20 Minutos ou Status >= 3**:
+  Se tiverem passado mais de 20 minutos ou o status do pedido anterior for `>= 3` (Saiu para entrega), o agente passa `p_forcar_novo: true` e o banco gera um **NOVO PEDIDO COM NOVO #ID**.
+- **Retirada vs. Entrega**:
+  Pedidos para Retirada no Balcão e Pedidos para Entrega a Domicílio **SEMPRE geram #IDs independentes**.
 
 ---
 
-## 8. Regras Específicas de Checkout e PIX
+## 6. Cálculo da Diferença PIX em Adições
 
-- **Fluxo PIX**:
-  - Quando o cliente escolhe PIX, o agente **NÃO envia a chave de imediato**.
-  - Pergunta primeiro: *"Você prefere pagar no PIX agora pelo WhatsApp ou no PIX na entrega/retirada?"*
-  - Se for na entrega/retirada: Chame `criar_pedido_completo` imediatamente.
-  - Apenas se disser que quer pagar agora: Apresente o Resumo e a Chave PIX (`CHAVE_PIX`). Apenas conclua após a validação da foto do comprovante via visão computacional.
-- **Dinheiro com Troco**: Pergunta "Troco para quanto?" e grava `p_troco_para`.
-- **Cartão (Crédito/Débito)**: Conclui o pedido imediatamente.
+- Se o pedido já foi pago via PIX e o cliente adicionar um novo item (ex: Guaraná 1L R$ 11,00):
+  - A IA mantém o pedido existente e envia a chave PIX cobrando **apenas a diferença a pagar (R$ 11,00)**.
+  - Ao receber o comprovante de R$ 11,00, a visão computacional valida e grava o comprovante complementar em `p_observacoes`.
+
+---
+
+## 7. Leitura de Comprovantes PIX em PDF (documentMessage)
+
+- O `vision_service.py` aceita arquivos PDF enviados no WhatsApp (`mimetype: application/pdf`).
+- O base64 do PDF é enviado para o modelo de visão multimodal que extrai o valor pago, o recebedor e valida o PIX com 100% de precisão.
+
+---
+
+## 8. Formatação Visível de Adicionais nas Comandas
+
+- **Vínculo em `public.produto_grupos_adicionais`**: Todos os produtos possuem os acompanhamentos e adicionais vinculados no Supabase.
+- **Concatenação em `produto_nome`**: A RPC `criar_pedido_completo` salva a descrição do item já com os acompanhamentos escolhidos (ex: `Frango inteiro (Feijão tropeiro)`), garantindo que eles apareçam claramente no painel web e na impressão térmica.
+
+---
+
+## 9. Duplo Webhook de Repasse para o n8n
+
+- Todos os eventos recebidos da Evolution API (mensagens, atualizações de conexão, QR Code `qrcode.updated`) são repassados em segundo plano (Background Task) para os webhooks do n8n:
+  - Webhook de Conexão / Eventos: `https://n8n.proia.com.br/webhook/cf0c69c8-01ab-4a34-907a-febed00cc5db`
+  - Webhook Secundário: `https://n8n.proia.com.br/webhook/42456d3e-1951-4f2b-9290-c08dee4a52d0`
+
+---
+
+## 10. Agente Autônomo de Vendas proIA Delivery (`agente_venda_proia`)
+
+- **Repositório Git**: `proia-agent-vendas` (Porta `8001` no Coolify).
+- **Tabelas Exclusivas no Supabase**: `public.leads_vendas` e `public.vendas_chat_histories`.
+- **Qualificação em 4 Perguntas**: Tipo de Negócio, Sistema Atual, Volume de Pedidos e Maior Dor Operacional.
+- **Base de Conhecimento `PROIA_KNOWLEDGE_BASE`**: Conhecimento completo sobre a plataforma, atendimento 24h, leitura PIX, impressão térmica e onboarding 100% assistido.
+- **Handoff Automático (`registrar_lead_e_handoff`)**: Ao detectar pergunta sobre valores ou interesse de compra, ativa `transbordo_humano = true`, salva o resumo executivo do lead e transfere amigavelmente para o consultor humano na mesma conversa.
