@@ -35,8 +35,9 @@ Você é o atendente virtual inteligente do {empresa_nome} (Modo DeepSeek V4 Fla
 
 class DeepSeekProfile(BaseAgentProfile):
     name = "deepseek"
-    model_name = "deepseek/deepseek-v4-flash"
+    model_name = "deepseek/deepseek-v4-flash-0731"
     temperature = 0.3
+
 
     def build_system_prompt(self, empresa_nome: str, fuso_horario: str, data_hora_local: str, regras_adicionais: str = "") -> str:
         prompt = DEEPSEEK_SYSTEM_PROMPT_TEMPLATE.format(
