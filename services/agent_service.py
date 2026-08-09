@@ -7,8 +7,10 @@ from zoneinfo import ZoneInfo
 import httpx
 from openai import AsyncOpenAI
 from config import settings
+from profiles import get_active_profile
 from services.supabase_service import supabase_service
 from services.evolution_service import evolution_service
+
 
 logger = logging.getLogger("agent_service")
 
@@ -456,14 +458,17 @@ class AgentService:
         cardapio_digital_url = f"https://app.proia.com.br/loja/{slug_empresa}"
         endereco_loja_oficial = empresa_rows.get("endereco", "R. Sao Francisco, 2249 - Lot. Mimoso Doeste I, Luis Eduardo Magalhaes - BA")
 
-        chosen_model = model_override or settings.MODEL_NAME
+        chosen_profile_name = settings.ACTIVE_AGENT_PROFILE
+        active_profile = get_active_profile(chosen_profile_name)
+
+        chosen_model = model_override or active_profile.model_name
         client, model_name = self.get_client_for_model(chosen_model)
 
         history = await self.get_chat_history(session_id, limit=14)
         eh_cliente_novo = (len(history) == 0)
         prompt_customizado_loja = empresa_data.get("prompt_customizado") or empresa_data.get("regras_adicionais") or ""
 
-        logger.info(f"Agente: {contact_name} | Modelo: {model_name} | Loja ID: {id_numerico_empresa} ({slug_empresa}) | Session: {session_id} | Novo: {eh_cliente_novo}")
+        logger.info(f"Agente: {contact_name} | Perfil: {active_profile.name} | Modelo: {model_name} | Loja ID: {id_numerico_empresa} ({slug_empresa}) | Session: {session_id} | Novo: {eh_cliente_novo}")
 
         # Calcular fuso horario local exato da loja no Brasil
         fuso_loja = empresa_data.get("fuso_horario") or "America/Sao_Paulo"
@@ -479,7 +484,7 @@ class AgentService:
         dia_nome = dias_semana.get(agora_local.strftime("%A"), agora_local.strftime("%A"))
         hora_local_str = f"{dia_nome}, {agora_local.strftime('%d/%m/%Y às %H:%M:%S')} (Fuso: {fuso_loja})"
 
-        # Build system prompt header (safe f-strings, only simple variables)
+        # Build system prompt header
         header = (
             f"CONTEXTO DA SESSAO DA LOJA:\n"
             f"Data/Hora Atual Local da Loja: {hora_local_str}\n"
@@ -500,18 +505,17 @@ class AgentService:
             f"Chave PIX (NUNCA ENVIAR A MENOS QUE SOLICITADO EXPLICITAMENTE): {empresa_rows.get('chave_pix', '')}\n\n"
         )
 
-        # Build prompt body using safe replace (Isolamento total: DeepSeek usa TESTER_SYSTEM_PROMPT_BODY, Gemini usa SYSTEM_PROMPT_BODY)
-        if "deepseek" in chosen_model.lower():
-            body = TESTER_SYSTEM_PROMPT_BODY
-        else:
-            body = SYSTEM_PROMPT_BODY
+        # Construir o corpo do prompt usando o perfil ativo
+        empresa_full_nome = f"{empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}".strip()
+        body = active_profile.build_system_prompt(
+            empresa_nome=empresa_full_nome,
+            fuso_horario=fuso_loja,
+            data_hora_local=hora_local_str,
+            regras_adicionais=prompt_customizado_loja
+        )
 
-        body = body.replace("__EMPRESA_NOME__", f"{empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}")
-        body = body.replace("__ENDERECO_LOJA__", endereco_loja_oficial)
-        body = body.replace("__TELEFONE_CLIENTE__", phone_number)
-        body = body.replace("__CARDAPIO_URL__", cardapio_digital_url)
+        system_prompt = header + "\n" + body
 
-        system_prompt = header + body
         
         # Mensagem do usuario (simples e limpa para o LLM processar melhor)
         await self.save_message_to_history(session_id, "user", user_message)
