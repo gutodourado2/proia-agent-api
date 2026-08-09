@@ -347,7 +347,8 @@ class AgentService:
             client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
             return client, model_name
 
-    async def get_chat_history(self, session_id: str, limit: int = 14) -> List[Dict[str, Any]]:
+    async def get_chat_history(self, session_id: str, limit: int = 12) -> List[Dict[str, Any]]:
+
         url = f"{supabase_service.base_url}/rest/v1/n8n_chat_histories?session_id=eq.{session_id}&order=id.desc&limit={limit}"
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
@@ -464,7 +465,8 @@ class AgentService:
         chosen_model = model_override or active_profile.model_name
         client, model_name = self.get_client_for_model(chosen_model)
 
-        history = await self.get_chat_history(session_id, limit=14)
+        history = await self.get_chat_history(session_id, limit=12)
+
         eh_cliente_novo = (len(history) == 0)
         prompt_customizado_loja = empresa_data.get("prompt_customizado") or empresa_data.get("regras_adicionais") or ""
 
