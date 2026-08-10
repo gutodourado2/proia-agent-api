@@ -122,3 +122,14 @@
 - **Qualificação em 4 Perguntas**: Tipo de Negócio, Sistema Atual, Volume de Pedidos e Maior Dor Operacional.
 - **Base de Conhecimento `PROIA_KNOWLEDGE_BASE`**: Conhecimento completo sobre a plataforma, atendimento 24h, leitura PIX, impressão térmica e onboarding 100% assistido.
 - **Handoff Automático (`registrar_lead_e_handoff`)**: Ao detectar pergunta sobre valores ou interesse de compra, ativa `transbordo_humano = true`, salva o resumo executivo do lead e transfere amigavelmente para o consultor humano na mesma conversa.
+
+---
+
+## 11. Sanitização de Endereços e Blindagem de Frete no Supabase
+
+- **Sanitização Inteligente em `public.calcular_entrega_completa`**:
+  - Expressões em parênteses `\(.*?\)` (ex: pontos de referência como `(descendo a rua...)`) e termos como `ponto de referencia`, `ref:`, `proximo a`, `descendo` são automaticamente removidos na consulta às APIs do Google Maps (Places/Geocoding).
+  - Garante que ruídos e pontos de referência extensos não façam a busca cair em municípios homônimos distante (ex: Cristópolis - BA a 162 km).
+- **Trava de Recálculo Backend (`criar_pedido_completo` / `atualizar_pedido_completo`)**:
+  - Se um pedido de entrega for enviado com `p_taxa_entrega <= 8` ou coordenadas/distância zeradas (`distancia_km = 0`), o banco invoca automaticamente a função `calcular_entrega_completa`.
+  - O valor real do frete retornado pelo Google Maps é aplicado e as coordenadas (`latitude_entrega`, `longitude_entrega`, `distancia_km`) são salvas no pedido, impedindo que fretes zerados ou mínimos sejam gravados indevidamente.
