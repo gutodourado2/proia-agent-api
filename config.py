@@ -7,10 +7,10 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "openrouter"  # "openai" ou "openrouter"
     ACTIVE_AGENT_PROFILE: str = "deepseek"  # "deepseek" ou "gemini" - Alterne aqui para troca instantânea de produção!
     MODEL_NAME: str = "deepseek/deepseek-v4-flash-0731"
-    FALLBACK_MODEL_NAME: str = "google/gemini-3.6-flash"
+    FALLBACK_MODEL_NAME: str = "google/gemini-3.7-flash"
 
     SECOND_FALLBACK_MODEL_NAME: str = "google/gemini-3.1-flash-lite"
-    PREVIOUS_MODEL_NAME: str = "google/gemini-3.6-flash"
+    PREVIOUS_MODEL_NAME: str = "google/gemini-3.7-flash"
 
     
     # MODO TESTER STAGING (ISOLAMENTO TOTAL DE SEGURANÇA)
