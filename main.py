@@ -225,7 +225,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         # 8. Manter sinal de 'digitando...' ou 'gravando audio...' ativado durante o processamento da IA
         await evolution_service.send_presence(instance, remote_jid, presence_type)
 
-        # 9. Executar o Agente Inteligente (Gemini em produção ou DeepSeek no Modo Tester)
+        # 9. Executar o Agente Inteligente (DeepSeek V4.1 Flash principal com cascata de segurança)
         chosen_model_initial = settings.TESTER_MODEL_NAME if is_tester else settings.MODEL_NAME
         try:
             reply_text = await agent_service.run_agent(
@@ -235,10 +235,11 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                 remote_jid=remote_jid,
                 user_message=user_message_text,
                 instance=instance,
-                model_override=chosen_model_initial
+                model_override=chosen_model_initial,
+                save_user_message=True
             )
         except Exception as e:
-            await supabase_service.registrar_log("WARN", f"Modelo principal ({settings.MODEL_NAME}) falhou. Ativando Sub-Agente de Emergência ({settings.FALLBACK_MODEL_NAME}): {e}")
+            await supabase_service.registrar_log("WARN", f"Modelo principal ({chosen_model_initial}) falhou. Ativando Sub-Agente de Emergência ({settings.FALLBACK_MODEL_NAME}): {e}")
             try:
                 reply_text = await agent_service.run_agent(
                     empresa_data=empresa_data,
@@ -247,7 +248,8 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                     remote_jid=remote_jid,
                     user_message=user_message_text,
                     instance=instance,
-                    model_override=settings.FALLBACK_MODEL_NAME
+                    model_override=settings.FALLBACK_MODEL_NAME,
+                    save_user_message=False
                 )
             except Exception as ex:
                 await supabase_service.registrar_log("ERROR", f"Sub-Agente ({settings.FALLBACK_MODEL_NAME}) falhou. Ativando emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex}")
@@ -259,7 +261,8 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                         remote_jid=remote_jid,
                         user_message=user_message_text,
                         instance=instance,
-                        model_override=settings.SECOND_FALLBACK_MODEL_NAME
+                        model_override=settings.SECOND_FALLBACK_MODEL_NAME,
+                        save_user_message=False
                     )
                 except Exception as ex2:
                     await supabase_service.registrar_log("ERROR", f"Falha no fallback de emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex2}")

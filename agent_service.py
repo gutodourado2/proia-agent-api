@@ -242,6 +242,9 @@ REGRAS ABSOLUTAS (siga TODAS sem excecao):
 class AgentService:
     def get_client_for_model(self, target_model: Optional[str] = None):
         model_name = target_model or settings.MODEL_NAME
+        if "deepseek-v4-flash-0423" in model_name or "0423" in model_name:
+            model_name = "deepseek/deepseek-v4.1-flash"
+
         if "/" in model_name or settings.LLM_PROVIDER.lower() == "openrouter" or (settings.OPENROUTER_API_KEY and not settings.OPENAI_API_KEY):
             api_key = settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY
             client = AsyncOpenAI(
@@ -257,7 +260,7 @@ class AgentService:
             client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
             return client, model_name
 
-    async def get_chat_history(self, session_id: str, limit: int = 14) -> List[Dict[str, Any]]:
+    async def get_chat_history(self, session_id: str, limit: int = 30) -> List[Dict[str, Any]]:
         url = f"{supabase_service.base_url}/rest/v1/n8n_chat_histories?session_id=eq.{session_id}&order=id.desc&limit={limit}"
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
@@ -267,11 +270,14 @@ class AgentService:
                 messages = []
                 for row in data:
                     msg = row.get("message", {})
-                    role = "user" if msg.get("type") == "human" else "ai"
+                    role = "user" if msg.get("type") == "human" else "assistant"
                     content = msg.get("content", "")
                     if content:
                         clean_content = re.sub(r'!\[.*?\]\([^\)]+\)', '', content).strip()
-                        messages.append({"role": "user" if role == "user" else "assistant", "content": clean_content})
+                        # Deduplicar mensagens consecutivas idênticas do mesmo remetente
+                        if messages and messages[-1]["role"] == role and messages[-1]["content"] == clean_content:
+                            continue
+                        messages.append({"role": role, "content": clean_content})
                 return messages
             except Exception as e:
                 logger.error(f"Erro ao ler n8n_chat_histories: {e}")
@@ -355,7 +361,8 @@ class AgentService:
         remote_jid: str,
         user_message: str,
         instance: str,
-        model_override: Optional[str] = None
+        model_override: Optional[str] = None,
+        save_user_message: bool = True
     ) -> str:
         session_id = remote_jid.split('@')[0]
         
@@ -399,10 +406,11 @@ class AgentService:
 
         system_prompt = header + body
 
-        history = await self.get_chat_history(session_id, limit=14)
+        history = await self.get_chat_history(session_id, limit=30)
         
-        # Mensagem do usuario (simples e limpa para o LLM processar melhor)
-        await self.save_message_to_history(session_id, "user", user_message)
+        # Mensagem do usuario (salvar apenas se save_user_message for True)
+        if save_user_message:
+            await self.save_message_to_history(session_id, "user", user_message)
         
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
@@ -449,7 +457,26 @@ class AgentService:
                     "content": tool_result_str
                 })
 
-        fallback_text = "Estou aqui para ajudar! O que voce gostaria de pedir?"
+        # Se esgotar as iterações de ferramentas, força o LLM a sintetizar uma resposta com o contexto acumulado
+        try:
+            final_res = await client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                tool_choice="none",
+                temperature=0.3,
+                max_tokens=512
+            )
+            final_content = final_res.choices[0].message.content or ""
+            clean_final = re.sub(r'!\[.*?\]\([^\)]+\)', '', final_content)
+            clean_final = re.sub(r'https?://\S+\.(?:jpg|jpeg|png|webp)', '', clean_final)
+            clean_final = re.sub(r'\n{3,}', '\n\n', clean_final).strip()
+            if clean_final:
+                await self.save_message_to_history(session_id, "assistant", clean_final)
+                return clean_final
+        except Exception as e:
+            logger.error(f"Erro ao sintetizar resposta final após iterações: {e}")
+
+        fallback_text = "Recebi sua mensagem! Estou confirmando os detalhes do seu pedido. Poderia me confirmar um ponto de referência próximo para a entrega?"
         await self.save_message_to_history(session_id, "assistant", fallback_text)
         return fallback_text
 

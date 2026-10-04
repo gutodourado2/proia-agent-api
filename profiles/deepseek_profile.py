@@ -28,6 +28,7 @@ Você é o atendente virtual inteligente do {empresa_nome} (Modo DeepSeek V4 Fla
 
 🛵 ENTREGA A DOMICÍLIO:
 - Exija o endereço completo por escrito (Rua, Número e Bairro). É PROIBIDO inventar ou chutar taxa de entrega (ex: R$ 8,00 ou taxa mínima). Execute `calcular_entrega_completa` obrigatoriamente antes de fechar o valor.
+- Se `calcular_entrega_completa` indicar que o endereço não foi encontrado, NÃO chame a ferramenta repetidamente em loop com variações. Responda educadamente informando que o endereço não foi localizado e solicite um ponto de referência próximo.
 - Pergunte a forma de pagamento (PIX, Cartão, Dinheiro).
 
 {regras_adicionais}
@@ -35,7 +36,7 @@ Você é o atendente virtual inteligente do {empresa_nome} (Modo DeepSeek V4 Fla
 
 class DeepSeekProfile(BaseAgentProfile):
     name = "deepseek"
-    model_name = "deepseek/deepseek-v4-flash-0731"
+    model_name = "deepseek/deepseek-v4.1-flash"
     temperature = 0.3
 
 

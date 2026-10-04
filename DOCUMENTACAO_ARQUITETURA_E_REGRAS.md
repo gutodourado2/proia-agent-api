@@ -37,14 +37,14 @@
 
 ## 2. Modelos de IA, Modo Tester Staging e Fallbacks
 
-- **Modelo Oficial de Produção**: `deepseek/deepseek-v4-flash-0731` via OpenRouter SDK.
+- **Modelo Oficial de Produção**: `deepseek/deepseek-v4.1-flash` via OpenRouter SDK.
 - **Modo Tester Staging (Isolamento Total por Telefone)**:
   - **Telefones de Teste Cadastrados**: `5577998238209` e `557791662913`.
   - **Loja Staging no Supabase**: `empresa_id: 99` (*Cantinho do Frango Assado - Testes Staging*).
-  - **Modelo em Teste/Calibração**: `deepseek/deepseek-v4-flash-0731`.
+  - **Modelo em Teste/Calibração**: `deepseek/deepseek-v4.1-flash`.
   - **Prompt Exclusivo**: `TESTER_SYSTEM_PROMPT_BODY` (calibrado para a arquitetura MoE do DeepSeek sem alterar 1 vírgula do prompt oficial do Gemini).
   - **Garantias de Segurança**: Pedidos dos testes são salvos **apenas na loja 99** e **NUNCA são impressos na comanda da cozinha oficial (loja 43)**!
-- **Cascata de Fallbacks**: `deepseek/deepseek-v4-flash-0731` (Tier 1) ➔ `google/gemini-3.7-flash` (Tier 2) ➔ `google/gemini-3.1-flash-lite` (Tier 3).
+- **Cascata de Fallbacks**: `deepseek/deepseek-v4.1-flash` (Tier 1) ➔ `google/gemini-3.7-flash` (Tier 2) ➔ `google/gemini-3.1-flash-lite` (Tier 3).
 
 ---
 
@@ -127,9 +127,10 @@
 
 ## 11. Sanitização de Endereços e Blindagem de Frete no Supabase
 
-- **Sanitização Inteligente em `public.calcular_entrega_completa`**:
-  - Expressões em parênteses `\(.*?\)` (ex: pontos de referência como `(descendo a rua...)`) e termos como `ponto de referencia`, `ref:`, `proximo a`, `descendo` são automaticamente removidos na consulta às APIs do Google Maps (Places/Geocoding).
+- **Sanitização Inteligente e Alta Disponibilidade em `public.calcular_entrega_completa`**:
+  - Expressões em parênteses `\(.*?\)` (ex: pontos de referência como `(descendo a rua...)`) e termos como `ponto de referencia`, `ref:`, `proximo a`, `descendo` são automaticamente removidos antes da geocodificação.
   - Garante que ruídos e pontos de referência extensos não façam a busca cair em municípios homônimos distante (ex: Cristópolis - BA a 162 km).
+  - **Arquitetura Multi-Provedor Resiliente**: Tenta prioritariamente Google Places e Geocoding. Se a API do Google falhar, retornar erro ou tiver suspensão de faturamento no Google Cloud, o Supabase aciona imediatamente o fallback autônomo via **OpenStreetMap / Nominatim** e estima a distância via **Haversine**, garantindo que o agente e a loja nunca fiquem travados sem calcular frete.
 - **Trava de Recálculo Backend (`criar_pedido_completo` / `atualizar_pedido_completo`)**:
   - Se um pedido de entrega for enviado com `p_taxa_entrega <= 8` ou coordenadas/distância zeradas (`distancia_km = 0`), o banco invoca automaticamente a função `calcular_entrega_completa`.
-  - O valor real do frete retornado pelo Google Maps é aplicado e as coordenadas (`latitude_entrega`, `longitude_entrega`, `distancia_km`) são salvas no pedido, impedindo que fretes zerados ou mínimos sejam gravados indevidamente.
+  - O valor real do frete retornado é aplicado e as coordenadas (`latitude_entrega`, `longitude_entrega`, `distancia_km`) são salvas no pedido, impedindo que fretes zerados ou mínimos sejam gravados indevidamente.
