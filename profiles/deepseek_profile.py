@@ -36,7 +36,7 @@ Você é o atendente virtual inteligente do {empresa_nome} (Modo DeepSeek V4 Fla
 
 class DeepSeekProfile(BaseAgentProfile):
     name = "deepseek"
-    model_name = "deepseek/deepseek-v4.1-flash"
+    model_name = "deepseek/deepseek-v4-flash-0731"
     temperature = 0.3
 
 

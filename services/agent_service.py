@@ -329,8 +329,9 @@ Você é o atendente virtual inteligente do __EMPRESA_NOME__ (Modo Staging/Calib
 class AgentService:
     def get_client_for_model(self, target_model: Optional[str] = None):
         model_name = target_model or settings.MODEL_NAME
-        if "deepseek-v4-flash-0423" in model_name or "0423" in model_name:
-            model_name = "deepseek/deepseek-v4.1-flash"
+        # Tratamento de segurança para nomes de modelo incorretos no OpenRouter:
+        if "deepseek-v4-flash-0423" in model_name:
+            model_name = "deepseek/deepseek-v4-flash"
 
         # Se for um modelo nativo OpenAI para fallback (ex: gpt-4o, gpt-4o-mini)
         if model_name in ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]:

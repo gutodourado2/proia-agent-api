@@ -242,8 +242,8 @@ REGRAS ABSOLUTAS (siga TODAS sem excecao):
 class AgentService:
     def get_client_for_model(self, target_model: Optional[str] = None):
         model_name = target_model or settings.MODEL_NAME
-        if "deepseek-v4-flash-0423" in model_name or "0423" in model_name:
-            model_name = "deepseek/deepseek-v4.1-flash"
+        if "deepseek-v4-flash-0423" in model_name:
+            model_name = "deepseek/deepseek-v4-flash"
 
         if "/" in model_name or settings.LLM_PROVIDER.lower() == "openrouter" or (settings.OPENROUTER_API_KEY and not settings.OPENAI_API_KEY):
             api_key = settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY
