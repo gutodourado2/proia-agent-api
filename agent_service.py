@@ -223,7 +223,7 @@ REGRAS ABSOLUTAS (siga TODAS sem excecao):
    - Se ENTREGA:
      a) Chame buscar_enderecos_cliente (telefone: __TELEFONE_CLIENTE__).
      b) Se tiver endereco salvo, confirme. Senao, peca Rua, Numero e Bairro.
-     c) Calcule frete com calcular_entrega_completa.
+     c) Calcule frete com calcular_entrega_completa (se ja calculado com sucesso, use a taxa obtida e nao recalcule em loop).
      d) Pergunte horario desejado.
    - Grave horario no campo p_observacoes.
 

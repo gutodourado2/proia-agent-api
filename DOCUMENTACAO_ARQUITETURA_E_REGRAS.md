@@ -127,10 +127,11 @@
 
 ## 11. Sanitização de Endereços e Blindagem de Frete no Supabase
 
-- **Sanitização Inteligente e Alta Disponibilidade em `public.calcular_entrega_completa`**:
+- **Sanitização Inteligente e Integração com Google Maps em `public.calcular_entrega_completa`**:
   - Expressões em parênteses `\(.*?\)` (ex: pontos de referência como `(descendo a rua...)`) e termos como `ponto de referencia`, `ref:`, `proximo a`, `descendo` são automaticamente removidos antes da geocodificação.
-  - Garante que ruídos e pontos de referência extensos não façam a busca cair em municípios homônimos distante (ex: Cristópolis - BA a 162 km).
-  - **Arquitetura Multi-Provedor Resiliente**: Tenta prioritariamente Google Places e Geocoding. Se a API do Google falhar, retornar erro ou tiver suspensão de faturamento no Google Cloud, o Supabase aciona imediatamente o fallback autônomo via **OpenStreetMap / Nominatim** e estima a distância via **Haversine**, garantindo que o agente e a loja nunca fiquem travados sem calcular frete.
+  - O sistema impede duplicação da cidade e estado na consulta da API.
+  - **Prioridade 100% Google Maps**: Utiliza Google Geocoding API (`maps.googleapis.com/maps/api/geocode/json`) com bounds e components do Brasil para endereços residenciais, e fallback para Google Places Text Search para pontos comerciais/estabelecimentos. O cálculo de rota utiliza Google Distance Matrix API (com Haversine como salvaguarda geométrica).
+  - Caso o Google Maps retorne erro de billing (`REQUEST_DENIED`), a função reporta explicitamente o status `GOOGLE_MAPS_REQUEST_DENIED` sem mascarar como endereço inexistente.
 - **Trava de Recálculo Backend (`criar_pedido_completo` / `atualizar_pedido_completo`)**:
   - Se um pedido de entrega for enviado com `p_taxa_entrega <= 8` ou coordenadas/distância zeradas (`distancia_km = 0`), o banco invoca automaticamente a função `calcular_entrega_completa`.
   - O valor real do frete retornado é aplicado e as coordenadas (`latitude_entrega`, `longitude_entrega`, `distancia_km`) são salvas no pedido, impedindo que fretes zerados ou mínimos sejam gravados indevidamente.
