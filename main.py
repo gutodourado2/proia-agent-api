@@ -1,10 +1,11 @@
 import re
 import json
+import time
 import asyncio
 import traceback
 import logging
 import httpx
-from typing import Dict, Any
+from typing import Dict, Any, List
 from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -45,7 +46,10 @@ app = FastAPI(
     description="Microservico de Agente Inteligente de Delivery integrado com OpenAI SDK, OpenRouter TTS, Supabase e Evolution API"
 )
 
+# 🔒 Estruturas de controle de concorrência, idempotência e anti-loop
 active_locks: Dict[str, asyncio.Lock] = {}
+PROCESSED_MESSAGE_CACHE: Dict[str, float] = {}
+SESSION_MESSAGE_TIMESTAMPS: Dict[str, List[float]] = {}
 
 def get_session_lock(session_id: str) -> asyncio.Lock:
     if session_id not in active_locks:
@@ -75,6 +79,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
     remote_jid = ""
     empresa_id = None
     try:
+        # 1. Filtro estrito de eventos: processar apenas messages.upsert
         event = body.get("event")
         if event != "messages.upsert":
             return
@@ -83,8 +88,41 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         key = data.get("key", {})
 
         remote_jid = key.get("remoteJid", "")
-        if not remote_jid or "g.us" in remote_jid:
+        if not remote_jid or "g.us" in remote_jid or "broadcast" in remote_jid:
             return
+
+        message_type = data.get("messageType", "conversation")
+        # Ignorar tipos que não exigem resposta (reações, edição, protocolo)
+        if message_type in ["reactionMessage", "editedMessage", "protocolMessage", "reaction"]:
+            return
+
+        # 🛡️ 2. BLINDAGEM CONTRA SINCRONIZAÇÃO DE HISTÓRICO ANTIGO DO WHATSAPP:
+        # Quando um aparelho conecta à Evolution API, o WhatsApp Web descarrega mensagens antigas de sincronização.
+        # Mensagens enviadas há mais de 120 segundos (2 minutos) são descartadas imediatamente.
+        message_timestamp = data.get("messageTimestamp")
+        if message_timestamp:
+            try:
+                now_ts = time.time()
+                age_seconds = now_ts - float(message_timestamp)
+                if age_seconds > 120:
+                    logger.info(f"Ignorando mensagem de histórico antigo ({age_seconds:.1f}s atrás) de {remote_jid}")
+                    return
+                if age_seconds < -60:
+                    logger.warning(f"Timestamp futuro anômalo ({age_seconds:.1f}s). Ignorando.")
+                    return
+            except Exception as e_ts:
+                logger.warning(f"Erro ao validar messageTimestamp: {e_ts}")
+
+        # 🛡️ 3. BLINDAGEM DE DEDUPLICAÇÃO DE MENSAGEM (Evita processar o mesmo webhook repetido):
+        message_id = key.get("id")
+        if message_id:
+            if message_id in PROCESSED_MESSAGE_CACHE:
+                logger.info(f"Mensagem duplicada já processada ({message_id}). Ignorando.")
+                return
+            PROCESSED_MESSAGE_CACHE[message_id] = time.time()
+            if len(PROCESSED_MESSAGE_CACHE) > 5000:
+                for k in list(PROCESSED_MESSAGE_CACHE.keys())[:1000]:
+                    PROCESSED_MESSAGE_CACHE.pop(k, None)
 
         instance_raw = body.get("instance", "")
         if isinstance(instance_raw, dict):
@@ -96,10 +134,9 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         if isinstance(apikey, dict):
             apikey = ""
         push_name = data.get("pushName", "Cliente")
-        message_type = data.get("messageType", "conversation")
         message_obj = data.get("message", {})
 
-        # 1. Resolucao Inteligente da Empresa no Supabase (por apikey ou instance)
+        # 4. Resolução da Empresa no Supabase
         empresa_data = await supabase_service.get_empresa_by_identifier(apikey, instance)
         if not empresa_data:
             await supabase_service.registrar_log("ERROR", "Empresa nao encontrada", {"apikey": apikey, "instance": instance})
@@ -108,7 +145,6 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         phone_number = remote_jid.split('@')[0] if remote_jid else ""
 
         # 🛡️ INTERCEPTAÇÃO DE SEGURANÇA MODO TESTER STAGING:
-        # Se o telefone pertencer à lista de testadores (ex: 5577998238209), redireciona a empresa para 99 (Staging)
         is_tester = settings.ENABLE_TESTER_MODE and (phone_number in settings.TESTER_PHONE_NUMBERS)
         if is_tester:
             empresa_data_tester = await supabase_service.get_empresa_by_identifier(str(settings.TESTER_EMPRESA_ID), "")
@@ -119,136 +155,148 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         empresa_rows = empresa_data
         nome_empresa_raw = empresa_data.get("nome_empresa", "")
         
-        # Sanitizar push_name para nao salvar o nome da empresa como nome do cliente
         if not push_name or push_name.strip() in ["Cantinho do Frango Assado", nome_empresa_raw, "null", "None", ""]:
             push_name = "Cliente"
 
         voz_agente = empresa_data.get("voz_agente", "feminina")
         session_id = f"{empresa_id}_{phone_number}"
 
-        # BLOQUEIO DE SESSÃO: Garantir que apenas uma requisição por cliente seja processada por vez
+        # 🔒 BLOQUEIO COMPLETO DE SESSÃO: Toda a lógica restante executa dentro do lock por cliente
         async with get_session_lock(session_id):
-            # 2. REGRA ABSOLUTA: MENSAGEM ENVIADA MANUALMENTE PELO TELEFONE/INSTANCIA DA EMPRESA (fromMe == True)
+            # 5. REGRA ABSOLUTA: MENSAGEM ENVIADA MANUALMENTE PELO TELEFONE/INSTANCIA DA EMPRESA (fromMe == True)
             if key.get("fromMe"):
                 manual_text = message_obj.get("conversation") or message_obj.get("extendedTextMessage", {}).get("text") or ""
                 if session_id and manual_text:
                     await agent_service.save_message_to_history(session_id, "assistant", f"[Atendente Humano da Loja]: {manual_text}")
                 return
-        # Ignorar reações de emoji (ex: ❤️, 👍), mensagens editadas ou protocolos para evitar respostas duplicadas
-        if message_type in ["reactionMessage", "editedMessage", "protocolMessage", "reaction"]:
-            return
 
-        await supabase_service.registrar_log("INFO", f"Mensagem recebida para loja {empresa_id} ({empresa_data.get('nome_empresa')}): {push_name} ({remote_jid})", {
-            "message_type": message_type,
-            "instance": instance,
-            "apikey": apikey[:10] if apikey else "N/A",
-            "event": event,
-            "empresa_id": empresa_id,
-            "has_base64": bool(message_obj.get("base64"))
-        })
+            # 🛡️ 6. BLINDAGEM ANTI-FLOOD / ANTI-BOT / PING-PONG INFINITO (Proteção de Custos de API):
+            now_mono = time.time()
+            timestamps = SESSION_MESSAGE_TIMESTAMPS.get(session_id, [])
+            timestamps = [t for t in timestamps if now_mono - t < 300]
+            timestamps.append(now_mono)
+            SESSION_MESSAGE_TIMESTAMPS[session_id] = timestamps
 
-        # 3. VERIFICACAO DE REGRA OBRIGATORIA: agente_desabilitado (tabela empresa)
-        # Se o agente estiver desabilitado para a loja, DEIXA DE RESPONDER qualquer mensagem!
-        if empresa_data.get("agente_desabilitado"):
-            await supabase_service.registrar_log("INFO", f"Agente esta DESABILITADO para a loja {empresa_id}. Ignorando mensagem.")
-            return
-
-        # 4. Registrar cliente em clientes_whatsapp
-        await supabase_service.registrar_cliente_se_nao_existir(empresa_id, phone_number, push_name)
-
-        # 5. VERIFICACAO DE REGRA OBRIGATORIA: transbordo_humano (tabela clientes_whatsapp)
-        # Se o atendimento humano estiver ativo para o numero deste cliente nesta loja, a IA NAO responde.
-        cliente_db = await supabase_service.get_cliente_whatsapp(empresa_id, phone_number)
-        if cliente_db and cliente_db.get("transbordo_humano"):
-            await supabase_service.registrar_log("INFO", f"Transbordo humano ATIVO para cliente {phone_number} na loja {empresa_id}. Ignorando mensagem da IA.")
-            return
-
-        # 6. Indicador de presenca imediata no WhatsApp (digitando... ou gravando audio...)
-        presence_type = "recording" if message_type == "audioMessage" else "composing"
-        await evolution_service.send_presence(instance, remote_jid, presence_type)
-
-        # 7. Extrair conteudo da mensagem (Texto, Imagem, PDF, Audio ou Localizacao GPS)
-        user_message_text = ""
-        base64_data = message_obj.get("base64")
-        if not base64_data:
-            base64_data = data.get("base64")
-
-        caption = (
-            message_obj.get("imageMessage", {}).get("caption") or
-            message_obj.get("documentMessage", {}).get("caption") or
-            data.get("caption") or ""
-        )
-
-        if message_type == "audioMessage":
-            if base64_data:
+            recent_60s = [t for t in timestamps if now_mono - t < 60]
+            if len(recent_60s) > 6 or len(timestamps) > 14:
+                await supabase_service.registrar_log("WARN", f"Loop ou flood detectado para {remote_jid} na loja {empresa_id} ({len(timestamps)} msgs em 5min). Ativando transbordo humano para proteger custos de API.", {
+                    "session_id": session_id,
+                    "total_5min": len(timestamps),
+                    "recent_60s": len(recent_60s)
+                })
                 try:
-                    transcription = await audio_service.transcribe_audio_base64(base64_data)
-                    user_message_text = transcription or "Mensagem de áudio recebida"
-                    await supabase_service.registrar_log("INFO", f"Audio transcrito: {user_message_text[:80]}")
-                except Exception as e:
-                    await supabase_service.registrar_log("ERROR", f"Falha Whisper: {e}")
-                    user_message_text = "Mensagem de áudio recebida"
-            else:
-                user_message_text = "Mensagem de áudio recebida"
-                await supabase_service.registrar_log("WARN", "audioMessage sem base64")
+                    await supabase_service.set_transbordo_humano(empresa_id, phone_number, True)
+                except Exception as ex_tb:
+                    logger.error(f"Erro ao setar transbordo humano: {ex_tb}")
+                return
 
-        elif message_type in ["imageMessage", "documentMessage"]:
-            if base64_data:
-                try:
-                    user_message_text = await vision_service.analyze_image_or_receipt(base64_data, user_caption=caption, message_type=message_type)
-                    await supabase_service.registrar_log("INFO", f"Visao analisou: {user_message_text[:80]}")
-                except Exception as e:
-                    await supabase_service.registrar_log("ERROR", f"Falha visao: {e}")
-                    user_message_text = caption or "Cliente enviou uma imagem"
-            else:
-                user_message_text = caption or "Cliente enviou uma imagem"
-                await supabase_service.registrar_log("WARN", f"{message_type} sem base64")
-
-        elif message_type in ["locationMessage", "liveLocationMessage"]:
-            loc_obj = message_obj.get("locationMessage") or message_obj.get("liveLocationMessage") or data.get("locationMessage") or {}
-            lat = loc_obj.get("degreesLatitude")
-            lng = loc_obj.get("degreesLongitude")
-            address = loc_obj.get("address") or loc_obj.get("name") or loc_obj.get("comment") or ""
-            await supabase_service.registrar_log("INFO", f"Localizacao GPS recebida: Lat {lat}, Lng {lng}, Endereco: {address}")
+            # 🛡️ 7. BLINDAGEM DE DESPEDIDAS E PING-PONG DE FECHAMENTO ENTRE BOTS:
+            raw_text_for_check = (
+                message_obj.get("conversation") or 
+                message_obj.get("extendedTextMessage", {}).get("text") or 
+                ""
+            ).strip().lower()
             
-            if session_id:
-                await agent_service.save_message_to_history(session_id, "user", f"[Cliente enviou localização GPS via WhatsApp: Lat {lat}, Lng {lng}, Endereço/Nome: '{address}']")
-            
-            # REGRA OBRIGATORIA: Pedir o endereco por escrito para calculo correto do frete
-            written_addr_msg = "Obrigado por enviar a localização GPS! 📍 Para calcularmos a taxa de entrega exata e registrar o seu pedido, por favor envie o seu *endereço completo por escrito (Rua, Número e Bairro)*. 😊"
-            await evolution_service.send_text_message(instance, remote_jid, written_addr_msg)
-            if session_id:
-                await agent_service.save_message_to_history(session_id, "assistant", written_addr_msg)
-            return
+            CLOSING_WORDS = {
+                "boa noite", "boa noite!", "bom dia", "bom dia!", "boa tarde", "boa tarde!",
+                "obrigado", "obrigada", "valeu", "valeu!", "ok", "ok!", "blz", "beleza",
+                "certinho", "show", "show de bola", "tchau", "tchau!", "flw", "tmj",
+                "de nada", "por nada", "encerrar", "encerrando", "até mais", "ate mais"
+            }
+            if raw_text_for_check in CLOSING_WORDS:
+                history = await agent_service.get_chat_history(session_id, limit=5)
+                if history and history[-1].get("role") == "assistant":
+                    last_ai = history[-1].get("content", "").lower()
+                    if any(w in last_ai for w in ["boa noite", "bom dia", "boa tarde", "disposição", "obrigad", "qualquer coisa", "abraço", "até mais", "encerrar", "disponíveis"]):
+                        logger.info(f"Ping-pong de despedida evitado para {remote_jid}: cliente='{raw_text_for_check}'. Silenciando.")
+                        await agent_service.save_message_to_history(session_id, "user", raw_text_for_check)
+                        return
 
-        elif message_type == "conversation":
-            user_message_text = message_obj.get("conversation", "")
-        elif message_type == "extendedTextMessage":
-            user_message_text = message_obj.get("extendedTextMessage", {}).get("text", "")
-        else:
-            user_message_text = message_obj.get("conversation") or caption or "Mensagem recebida"
+            await supabase_service.registrar_log("INFO", f"Mensagem recebida para loja {empresa_id} ({empresa_data.get('nome_empresa')}): {push_name} ({remote_jid})", {
+                "message_type": message_type,
+                "instance": instance,
+                "apikey": apikey[:10] if apikey else "N/A",
+                "event": event,
+                "empresa_id": empresa_id,
+                "has_base64": bool(message_obj.get("base64"))
+            })
 
-        if not user_message_text.strip():
-            user_message_text = "Olá!"
+            # 8. VERIFICAÇÃO DE REGRA OBRIGATÓRIA: agente_desabilitado (tabela empresa)
+            if empresa_data.get("agente_desabilitado"):
+                await supabase_service.registrar_log("INFO", f"Agente esta DESABILITADO para a loja {empresa_id}. Ignorando mensagem.")
+                return
 
-        # 8. Manter sinal de 'digitando...' ou 'gravando audio...' ativado durante o processamento da IA
-        await evolution_service.send_presence(instance, remote_jid, presence_type)
+            # 9. Registrar cliente em clientes_whatsapp
+            await supabase_service.registrar_cliente_se_nao_existir(empresa_id, phone_number, push_name)
 
-        # 9. Executar o Agente Inteligente (DeepSeek V4.1 Flash principal com cascata de segurança)
-        chosen_model_initial = settings.TESTER_MODEL_NAME if is_tester else settings.MODEL_NAME
-        try:
-            reply_text = await agent_service.run_agent(
-                empresa_data=empresa_data,
-                empresa_rows=empresa_rows,
-                contact_name=push_name,
-                remote_jid=remote_jid,
-                user_message=user_message_text,
-                instance=instance,
-                model_override=chosen_model_initial,
-                save_user_message=True
+            # 10. VERIFICAÇÃO DE REGRA OBRIGATÓRIA: transbordo_humano
+            cliente_db = await supabase_service.get_cliente_whatsapp(empresa_id, phone_number)
+            if cliente_db and cliente_db.get("transbordo_humano"):
+                await supabase_service.registrar_log("INFO", f"Transbordo humano ATIVO para cliente {phone_number} na loja {empresa_id}. Ignorando mensagem da IA.")
+                return
+
+            # 11. Indicador de presença imediata no WhatsApp
+            presence_type = "recording" if message_type == "audioMessage" else "composing"
+            await evolution_service.send_presence(instance, remote_jid, presence_type)
+
+            # 12. Extrair conteúdo da mensagem (Texto, Imagem, PDF, Áudio ou Localização GPS)
+            user_message_text = ""
+            base64_data = message_obj.get("base64")
+            if not base64_data:
+                base64_data = data.get("base64")
+
+            caption = (
+                message_obj.get("imageMessage", {}).get("caption") or
+                message_obj.get("documentMessage", {}).get("caption") or
+                data.get("caption") or ""
             )
-        except Exception as e:
-            await supabase_service.registrar_log("WARN", f"Modelo principal ({chosen_model_initial}) falhou. Ativando Sub-Agente de Emergência ({settings.FALLBACK_MODEL_NAME}): {e}")
+
+            if message_type in ["imageMessage", "documentMessage"]:
+                if base64_data:
+                    user_message_text = await vision_service.analyze_image_or_receipt(base64_data, caption, message_type)
+                    await supabase_service.registrar_log("INFO", f"Visao analisou: {caption or 'documento'}")
+                else:
+                    user_message_text = caption or "[Cliente enviou uma imagem/documento]"
+
+            elif message_type == "audioMessage":
+                if base64_data:
+                    user_message_text = await audio_service.transcribe_audio(base64_data)
+                    await supabase_service.registrar_log("INFO", f"Audio transcrito: '{user_message_text}'")
+                else:
+                    user_message_text = "[Cliente enviou um audio mas sem conteudo]"
+
+            elif message_type in ["locationMessage", "liveLocationMessage"]:
+                loc_data = message_obj.get("locationMessage") or message_obj.get("liveLocationMessage") or {}
+                lat = loc_data.get("degreesLatitude")
+                lng = loc_data.get("degreesLongitude")
+                address = loc_data.get("address") or loc_data.get("name") or "Localização enviada via GPS"
+
+                await agent_service.save_message_to_history(
+                    session_id,
+                    "user",
+                    f"[Cliente enviou localização GPS via WhatsApp: Lat {lat}, Lng {lng}, Endereço/Nome: '{address}']"
+                )
+
+                written_addr_msg = (
+                    "Recebi sua localização pelo WhatsApp! 📍 Mas para garantir que seu pedido chegue certinho "
+                    "e calcularmos a taxa de entrega exata, por favor digite seu endereço completo por escrito: "
+                    "Nome da Rua, Número da casa e Bairro. 😊"
+                )
+                await agent_service.save_message_to_history(session_id, "assistant", written_addr_msg)
+                await evolution_service.send_text_message(instance, remote_jid, written_addr_msg)
+                return
+
+            else:
+                user_message_text = message_obj.get("conversation") or caption or "Mensagem recebida"
+
+            if not user_message_text.strip():
+                user_message_text = "Olá!"
+
+            # Manter presença ativa durante processamento da IA
+            await evolution_service.send_presence(instance, remote_jid, presence_type)
+
+            # 13. Executar o Agente Inteligente com cascata econômica e segura
+            chosen_model_initial = settings.TESTER_MODEL_NAME if is_tester else settings.MODEL_NAME
             try:
                 reply_text = await agent_service.run_agent(
                     empresa_data=empresa_data,
@@ -257,11 +305,11 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                     remote_jid=remote_jid,
                     user_message=user_message_text,
                     instance=instance,
-                    model_override=settings.FALLBACK_MODEL_NAME,
-                    save_user_message=False
+                    model_override=chosen_model_initial,
+                    save_user_message=True
                 )
-            except Exception as ex:
-                await supabase_service.registrar_log("ERROR", f"Sub-Agente ({settings.FALLBACK_MODEL_NAME}) falhou. Ativando emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex}")
+            except Exception as e:
+                await supabase_service.registrar_log("WARN", f"Modelo principal ({chosen_model_initial}) falhou. Ativando Sub-Agente ({settings.FALLBACK_MODEL_NAME}): {e}")
                 try:
                     reply_text = await agent_service.run_agent(
                         empresa_data=empresa_data,
@@ -270,62 +318,75 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                         remote_jid=remote_jid,
                         user_message=user_message_text,
                         instance=instance,
-                        model_override=settings.SECOND_FALLBACK_MODEL_NAME,
+                        model_override=settings.FALLBACK_MODEL_NAME,
                         save_user_message=False
                     )
-                except Exception as ex2:
-                    current_key = (settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY).strip().strip('"\'')
-                    masked_key = f"{current_key[:8]}...{current_key[-4:]}" if len(current_key) >= 12 else ("VAZIA" if not current_key else "CURTA")
-                    await supabase_service.registrar_log("ERROR", f"Falha no fallback de emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex2} | KeyInfo: len={len(current_key)}, mask={masked_key}")
-                    reply_text = f"Olá! Seja bem-vindo ao {nome_empresa_raw or 'Cantinho do Frango Assado'}! 😊 Um instante, por favor, já estou consultando nosso sistema para te atender."
+                except Exception as ex:
+                    await supabase_service.registrar_log("ERROR", f"Sub-Agente ({settings.FALLBACK_MODEL_NAME}) falhou. Ativando emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex}")
+                    try:
+                        reply_text = await agent_service.run_agent(
+                            empresa_data=empresa_data,
+                            empresa_rows=empresa_rows,
+                            contact_name=push_name,
+                            remote_jid=remote_jid,
+                            user_message=user_message_text,
+                            instance=instance,
+                            model_override=settings.SECOND_FALLBACK_MODEL_NAME,
+                            save_user_message=False
+                        )
+                    except Exception as ex2:
+                        current_key = (settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY).strip().strip('"\'')
+                        masked_key = f"{current_key[:8]}...{current_key[-4:]}" if len(current_key) >= 12 else ("VAZIA" if not current_key else "CURTA")
+                        await supabase_service.registrar_log("ERROR", f"Falha no fallback de emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex2} | KeyInfo: len={len(current_key)}, mask={masked_key}")
+                        reply_text = f"Olá! Seja bem-vindo ao {nome_empresa_raw or 'Cantinho do Frango Assado'}! 😊 Um instante, por favor, já estou consultando nosso sistema para te atender."
 
-        # Filtro de seguranca absoluto: remover qualquer formato markdown de imagem antes de enviar ao WhatsApp
-        clean_text = re.sub(r'!\[.*?\]\([^\)]+\)', '', reply_text)
-        clean_text = re.sub(r'https?://\S+\.(?:jpg|jpeg|png|webp)', '', clean_text)
-        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+            # Filtro de segurança: remover links ou markdown de imagem que possam vazar
+            clean_text = re.sub(r'!\[.*?\]\([^\)]+\)', '', reply_text)
+            clean_text = re.sub(r'https?://\S+\.(?:jpg|jpeg|png|webp)', '', clean_text)
+            clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
 
-        # 10. Disparar a resposta para o WhatsApp via Evolution API (Texto e/ou Áudio TTS)
-        if clean_text:
-            await evolution_service.send_text_message(instance, remote_jid, clean_text)
+            # 14. Enviar a resposta via Evolution API
+            if clean_text:
+                await evolution_service.send_text_message(instance, remote_jid, clean_text)
 
-            # Se a mensagem recebida foi audioMessage, sintetizar e enviar a resposta em áudio de voz PTT
-            if message_type == "audioMessage":
-                try:
-                    audio_b64 = await tts_service.generate_speech_base64(clean_text, gender=voz_agente)
-                    if audio_b64:
-                        sent = await evolution_service.send_whatsapp_audio(instance, remote_jid, audio_b64)
-                        if sent:
-                            await supabase_service.registrar_log("INFO", "Audio TTS enviado com sucesso no WhatsApp")
+                # Se a mensagem recebida foi áudio, sintetizar áudio TTS
+                if message_type == "audioMessage":
+                    try:
+                        audio_b64 = await tts_service.synthesize_speech(clean_text, voz=voz_agente)
+                        if audio_b64:
+                            sent = await evolution_service.send_whatsapp_audio(instance, remote_jid, audio_b64)
+                            if sent:
+                                await supabase_service.registrar_log("INFO", "Audio TTS enviado com sucesso no WhatsApp")
+                            else:
+                                await supabase_service.registrar_log("ERROR", "Falha ao enviar audio via Evolution API")
                         else:
-                            await supabase_service.registrar_log("ERROR", "Falha ao enviar audio via Evolution API")
-                    else:
-                        await supabase_service.registrar_log("WARN", "TTS retornou None (sem audio gerado)")
-                except Exception as e:
-                    await supabase_service.registrar_log("ERROR", f"Falha no fluxo TTS de audio: {e}")
+                            await supabase_service.registrar_log("WARN", "TTS retornou None (sem audio gerado)")
+                    except Exception as e_tts:
+                        await supabase_service.registrar_log("ERROR", f"Falha no fluxo TTS de audio: {e_tts}")
 
     except Exception as e:
         error_trace = traceback.format_exc()
         logger.error(f"Erro no processamento da mensagem: {e}", exc_info=True)
-        # Em caso de erro severo nao tratado, ativar transbordo humano e notificar
         try:
-            if remote_jid:
-                await supabase_service.set_transbordo_humano(remote_jid, status=True)
+            if remote_jid and empresa_id:
+                phone_num = remote_jid.split('@')[0] if remote_jid else ""
+                await supabase_service.set_transbordo_humano(empresa_id, phone_num, status=True)
                 await supabase_service.registrar_log("CRITICAL", f"Excecao severa -> Transbordo humano ativado para {remote_jid}: {e}", {
                     "traceback": error_trace[:800],
                     "instance": instance,
                     "remote_jid": remote_jid
                 })
-                fallback_msg = "Desculpe, ocorreu um erro no atendimento automático. Um de nossos atendentes humanos irá te ajudar em breve!"
+                fallback_msg = "Desculpe, ocorreu uma instabilidade momentânea no atendimento. Um atendente da nossa equipe irá te responder em breve!"
                 await evolution_service.send_text_message(instance, remote_jid, fallback_msg)
-        except Exception as ex:
-            logger.error(f"Falha no handler de erro severo: {ex}")
+        except Exception as ex_critical:
+            logger.error(f"Falha no handler de erro severo: {ex_critical}")
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
         
-        # 1. Repassar 100% dos eventos do Evolution API para o webhook do n8n em segundo plano (QR Code, Conexao, Status, etc)
+        # 1. Repassar eventos do Evolution API para o n8n em segundo plano
         if settings.N8N_FORWARD_WEBHOOK_URL:
             background_tasks.add_task(forward_webhook_to_n8n, body)
 
