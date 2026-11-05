@@ -339,7 +339,7 @@ class AgentService:
             return client, model_name
 
         if "/" in model_name or settings.LLM_PROVIDER.lower() == "openrouter" or (settings.OPENROUTER_API_KEY and not settings.OPENAI_API_KEY):
-            api_key = settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY
+            api_key = (settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY).strip().strip("\"\x27")
             client = AsyncOpenAI(
                 base_url="https://openrouter.ai/api/v1",
                 api_key=api_key,

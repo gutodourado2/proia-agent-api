@@ -54,11 +54,20 @@ def get_session_lock(session_id: str) -> asyncio.Lock:
 
 @app.get("/health")
 async def health_check():
+    current_key = (settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY).strip().strip('"\'')
+    masked_key = f"{current_key[:8]}...{current_key[-4:]}" if len(current_key) >= 12 else ("CONFIGURADA" if current_key else "AUSENTE")
     return {
         "status": "healthy",
         "service": "ProIA Delivery Agent API",
         "evolution_url": settings.EVOLUTION_API_URL,
-        "supabase_url": settings.SUPABASE_URL
+        "supabase_url": settings.SUPABASE_URL,
+        "llm_provider": settings.LLM_PROVIDER,
+        "model_name": settings.MODEL_NAME,
+        "fallback_model": settings.FALLBACK_MODEL_NAME,
+        "second_fallback_model": settings.SECOND_FALLBACK_MODEL_NAME,
+        "openrouter_key_status": masked_key,
+        "openrouter_key_length": len(current_key),
+        "openrouter_key_valid_syntax": bool(current_key.startswith("sk-or-v1-") and " " not in current_key)
     }
 
 async def process_whatsapp_message(body: Dict[str, Any]):
@@ -265,8 +274,10 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                         save_user_message=False
                     )
                 except Exception as ex2:
-                    await supabase_service.registrar_log("ERROR", f"Falha no fallback de emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex2}")
-                    reply_text = "Temos sim! Nossos pratos e produtos estão disponíveis hoje. O que você gostaria de pedir?"
+                    current_key = (settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY).strip().strip('"\'')
+                    masked_key = f"{current_key[:8]}...{current_key[-4:]}" if len(current_key) >= 12 else ("VAZIA" if not current_key else "CURTA")
+                    await supabase_service.registrar_log("ERROR", f"Falha no fallback de emergência ({settings.SECOND_FALLBACK_MODEL_NAME}): {ex2} | KeyInfo: len={len(current_key)}, mask={masked_key}")
+                    reply_text = f"Olá! Seja bem-vindo ao {nome_empresa_raw or 'Cantinho do Frango Assado'}! 😊 Um instante, por favor, já estou consultando nosso sistema para te atender."
 
         # Filtro de seguranca absoluto: remover qualquer formato markdown de imagem antes de enviar ao WhatsApp
         clean_text = re.sub(r'!\[.*?\]\([^\)]+\)', '', reply_text)

@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     TESTER_MODEL_NAME: str = "deepseek/deepseek-v4-flash-0731"
 
     def model_post_init(self, __context: object) -> None:
+        # Sanitizar chaves de API contra espacos ou aspas acidentais vindas do Coolify/.env
+        if self.OPENROUTER_API_KEY:
+            self.OPENROUTER_API_KEY = self.OPENROUTER_API_KEY.strip().strip('"\'')
+        if self.OPENAI_API_KEY:
+            self.OPENAI_API_KEY = self.OPENAI_API_KEY.strip().strip('"\'')
+
         # Previne erros de modelo inválido no OpenRouter:
         # 1. Se informarem 'deepseek-v4-flash-0423' com sufixo incorreto, normaliza para 'deepseek/deepseek-v4-flash'
         if self.MODEL_NAME == "deepseek/deepseek-v4-flash-0423":
