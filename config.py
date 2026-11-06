@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     LLM_PROVIDER: str = "openrouter"  # "openai" ou "openrouter"
     ACTIVE_AGENT_PROFILE: str = "deepseek"  # "deepseek" ou "gemini" - Alterne aqui para troca instantânea de produção!
-    MODEL_NAME: str = "deepseek/deepseek-v4-flash-0731"
+    MODEL_NAME: str = "deepseek/deepseek-v4.1-flash"
     FALLBACK_MODEL_NAME: str = "google/gemini-3.7-flash"
 
     SECOND_FALLBACK_MODEL_NAME: str = "google/gemini-3.1-flash-lite"
@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     ENABLE_TESTER_MODE: bool = True
     TESTER_PHONE_NUMBERS: list[str] = ["5577998238209", "557791662913"]
     TESTER_EMPRESA_ID: int = 99
-    TESTER_MODEL_NAME: str = "deepseek/deepseek-v4-flash-0731"
+    TESTER_MODEL_NAME: str = "deepseek/deepseek-v4.1-flash"
 
     def model_post_init(self, __context: object) -> None:
         # Sanitizar chaves de API contra espacos ou aspas acidentais vindas do Coolify/.env
