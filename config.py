@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     TESTER_EMPRESA_ID: int = 99
     TESTER_MODEL_NAME: str = "deepseek/deepseek-v4.1-flash"
 
+    # -------------------------------------------------------------------------
+    # JEV SYSTEM ONE DECISION GATEWAY & ROLLBACK KILL-SWITCHES
+    # -------------------------------------------------------------------------
+    ENABLE_JEV_GATEWAY: bool = False  # Kill-switch mestre. Se False, o sistema opera 100% como antes!
+    ENABLE_JEV_PRINT_GATE: bool = True  # Trava de confirmação explícita antes de criar_pedido_completo
+    ENABLE_JEV_ADDRESS_GATE: bool = True  # Trava de endereço por extenso (bloqueia PIN puro do WhatsApp)
+    ENABLE_JEV_ORDER_ADDITIONS: bool = True  # Gestão inteligente de status do pedido em adições
+    JEV_MODEL_NAME: str = "typesafe/jev-1.14"
+    JEV_TIMEOUT_SECONDS: float = 3.5  # Timeout curto; se expirar, degrada graciosamente sem travar o cliente
+
     def model_post_init(self, __context: object) -> None:
         # Sanitizar chaves de API contra espacos ou aspas acidentais vindas do Coolify/.env
         if self.OPENROUTER_API_KEY:

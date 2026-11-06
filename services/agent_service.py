@@ -10,6 +10,8 @@ from config import settings
 from profiles import get_active_profile
 from services.supabase_service import supabase_service
 from services.evolution_service import evolution_service
+from services.jev_service import jev_service
+
 
 
 logger = logging.getLogger("agent_service")
@@ -396,7 +398,17 @@ class AgentService:
             except Exception as e:
                 logger.error(f"Erro ao salvar mensagem no historico: {e}")
 
-    async def execute_tool(self, name: str, args: Dict[str, Any], default_user_id: str = "", instance: str = "", remote_jid: str = "") -> str:
+    async def execute_tool(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        default_user_id: str = "",
+        instance: str = "",
+        remote_jid: str = "",
+        user_message: str = "",
+        history: Optional[List[Dict[str, Any]]] = None,
+        cidade_loja: str = "Luís Eduardo Magalhães - BA"
+    ) -> str:
         try:
             if "p_empresa_id" in args:
                 args["p_empresa_id"] = default_user_id or str(args["p_empresa_id"])
@@ -431,16 +443,73 @@ class AgentService:
             elif name == "buscar_enderecos_cliente":
                 res = await supabase_service.buscar_enderecos_cliente(**args)
             elif name == "calcular_entrega_completa":
+                if settings.ENABLE_JEV_GATEWAY and settings.ENABLE_JEV_ADDRESS_GATE:
+                    raw_addr = args.get("p_endereco", "")
+                    val = await jev_service.validate_address_text(raw_addr, cidade_loja=cidade_loja)
+                    if not val.get("is_valid", True):
+                        logger.warning(f"[JEV GATEWAY] Endereço bloqueado: {val.get('reason')}")
+                        return json.dumps({
+                            "sucesso": False,
+                            "erro": "endereco_incompleto",
+                            "motivo": val.get("reason"),
+                            "orientacao_para_o_agente": (
+                                "NÃO invente taxa de entrega e NÃO conclua o frete ainda! "
+                                "O endereço fornecido está incompleto (faltou número predial ou bairro, ou foi apenas um PIN/link). "
+                                "Peça gentilmente para o cliente digitar o endereço completo por escrito com o nome da Rua, "
+                                "o Número da casa (ou quadra/lote) e o Bairro para calcularmos a taxa exata."
+                            )
+                        }, ensure_ascii=False)
+                    if val.get("clean_address"):
+                        args["p_endereco"] = val["clean_address"]
                 res = await supabase_service.calcular_entrega_completa(**args)
             elif name == "buscar_adicionais_produto":
                 res = await supabase_service.buscar_adicionais_produto(**args)
             elif name == "criar_pedido_completo":
+                if settings.ENABLE_JEV_GATEWAY and settings.ENABLE_JEV_PRINT_GATE:
+                    ultimo_resumo = history[-1].get("content", "") if history else ""
+                    tipo_ent = args.get("p_tipo_entrega", "retirada")
+                    is_ready, reason = await jev_service.verify_order_readiness(
+                        carrinho=args,
+                        ultimo_resumo_ia=ultimo_resumo,
+                        mensagem_cliente=user_message,
+                        tipo_entrega=tipo_ent
+                    )
+                    if not is_ready:
+                        logger.warning(f"[JEV GATEWAY] Bloqueio físico de impressão acionado: {reason}")
+                        return json.dumps({
+                            "sucesso": False,
+                            "bloqueio_impressao": True,
+                            "motivo": reason,
+                            "orientacao_para_o_agente": (
+                                "ATENÇÃO: A IMPRESSORA DA COZINHA NÃO FOI ACIONADA E O PEDIDO NÃO FOI FECHADO! "
+                                "O cliente ainda não confirmou expressamente o resumo final do pedido com 'Sim' ou 'Confirmado'. "
+                                "NÃO diga que o pedido foi finalizado! "
+                                "Apresente o resumo completo com itens, adicionais, endereço/horário e valor total, "
+                                "e pergunte: 'Podemos confirmar o seu pedido?'"
+                            )
+                        }, ensure_ascii=False)
                 res = await supabase_service.criar_pedido_completo(args)
             elif name == "consultar_pedido":
                 res = await supabase_service.consultar_pedido(**args)
             elif name == "atualizar_pedido_completo":
                 res = await supabase_service.atualizar_pedido_completo(args)
             elif name == "escalar_atendimento_humano":
+                if settings.ENABLE_JEV_GATEWAY:
+                    needs_human = await jev_service.verify_human_escalation(
+                        mensagem_cliente=user_message,
+                        historico_recente=history or []
+                    )
+                    if not needs_human:
+                        logger.warning("[JEV GATEWAY] Bloqueio de falso transbordo humano ativado pelo Circuit Breaker.")
+                        return json.dumps({
+                            "sucesso": False,
+                            "bloqueio_transbordo": True,
+                            "motivo": "Circuit Breaker: A solicitação do cliente não requer atendimento humano no momento.",
+                            "orientacao_para_o_agente": (
+                                "NÃO encerre o atendimento nem diga que passou para a equipe humana. "
+                                "Continue o atendimento prestativo com o cliente, tirando a dúvida dele com gentileza."
+                            )
+                        }, ensure_ascii=False)
                 res = await supabase_service.registrar_transbordo(**args)
             else:
                 res = {"erro": f"Ferramenta desconhecida: {name}"}
@@ -526,7 +595,36 @@ class AgentService:
             regras_adicionais=prompt_customizado_loja
         )
 
-        system_prompt = header + "\n" + body
+        # Verificação inteligente de Adição de Itens a Pedido Recente via Jev
+        contexto_adicao_extra = ""
+        if settings.ENABLE_JEV_GATEWAY and settings.ENABLE_JEV_ORDER_ADDITIONS and not eh_cliente_novo:
+            try:
+                ultimo_ped = await supabase_service.get_ultimo_pedido_cliente(id_numerico_empresa, phone_number)
+                if ultimo_ped:
+                    adicao_check = await jev_service.evaluate_order_addition(user_message, ultimo_ped)
+                    if adicao_check.get("is_addition"):
+                        ped_id = ultimo_ped.get("id")
+                        status_id = int(ultimo_ped.get("status", 1))
+                        if adicao_check.get("ja_saiu_para_entrega"):
+                            contexto_adicao_extra = (
+                                f"\n⚠️ ATENÇÃO OPERACIONAL CRÍTICA DE STATUS DO PEDIDO:\n"
+                                f"O cliente deseja adicionar itens, mas o Pedido #{ped_id} JÁ SAIU PARA ENTREGA (Status {status_id} - Despacho/Rota)!\n"
+                                f"O motoboy já está na rua e não pode levar mais nada naquela viagem.\n"
+                                f"INFORME AO CLIENTE que o Pedido #{ped_id} já saiu para entrega e pergunte se ele deseja abrir um NOVO PEDIDO com NOVA TAXA DE ENTREGA!\n"
+                                f"JAMAIS chame atualizar_pedido_completo para esse pedido!\n\n"
+                            )
+                        else:
+                            contexto_adicao_extra = (
+                                f"\n✅ ATENÇÃO OPERACIONAL DE ADIÇÃO DE ITENS (PEDIDO AINDA NA LOJA):\n"
+                                f"O cliente deseja adicionar itens ao Pedido #{ped_id} que AINDA ESTÁ NA LOJA (Status {status_id} - Em Preparo/Pendente).\n"
+                                f"NÃO COBRE NOVA TAXA DE ENTREGA! Use a mesma viagem do motoboy.\n"
+                                f"Chame 'atualizar_pedido_completo' para incluir os novos itens.\n"
+                                f"Se o pedido anterior já foi pago no PIX, cobre APENAS A DIFERENÇA dos novos itens!\n\n"
+                            )
+            except Exception as e_add:
+                logger.warning(f"Erro ao avaliar adicao de pedido Jev: {e_add}")
+
+        system_prompt = header + contexto_adicao_extra + "\n" + body
 
         
         # Mensagem do usuario (salvar apenas na primeira tentativa para nao duplicar em caso de fallback)
@@ -570,7 +668,16 @@ class AgentService:
                     fn_args = {}
                 
                 logger.info(f"Tool call: {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:200]})")
-                tool_result_str = await self.execute_tool(fn_name, fn_args, default_user_id=user_id_empresa, instance=instance, remote_jid=remote_jid)
+                tool_result_str = await self.execute_tool(
+                    fn_name,
+                    fn_args,
+                    default_user_id=user_id_empresa,
+                    instance=instance,
+                    remote_jid=remote_jid,
+                    user_message=user_message,
+                    history=history,
+                    cidade_loja=empresa_data.get("cidade") or "Luís Eduardo Magalhães - BA"
+                )
                 await supabase_service.registrar_log("INFO", f"Tool {fn_name} executada", {"args": fn_args, "res_len": len(tool_result_str), "snippet": tool_result_str[:250]})
                 
                 messages.append({

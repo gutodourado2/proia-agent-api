@@ -206,6 +206,22 @@ class SupabaseService:
     async def consultar_pedido(self, p_pedido_id: int):
         return await self.rpc("consultar_pedido", {"p_pedido_id": int(p_pedido_id)})
 
+    async def get_ultimo_pedido_cliente(self, empresa_id: Any, telefone: str) -> Optional[Dict[str, Any]]:
+        try:
+            emp_id = int(empresa_id) if str(empresa_id).isdigit() else 43
+            tel_limpo = re.sub(r'\D', '', str(telefone))
+            tel_busca = tel_limpo[-8:] if len(tel_limpo) >= 8 else tel_limpo
+            url = f"{self.base_url}/rest/v1/pedidos?empresa_id=eq.{emp_id}&telefone=ilike.*{tel_busca}*&order=id.desc&limit=1"
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                res = await client.get(url, headers=self.headers)
+                if res.status_code == 200:
+                    data = res.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        return data[0]
+        except Exception as e:
+            logger.warning(f"Erro ao buscar ultimo pedido do cliente: {e}")
+        return None
+
     async def atualizar_pedido_completo(self, payload: Dict[str, Any]):
         raw = await self.rpc("atualizar_pedido_completo", payload)
         if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], dict) and "atualizar_pedido_completo" in raw[0]:
