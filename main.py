@@ -4,6 +4,7 @@ import time
 import asyncio
 import traceback
 import logging
+from datetime import datetime, timezone, timedelta
 import httpx
 from typing import Dict, Any, List
 from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
@@ -232,8 +233,32 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             # 10. VERIFICAÇÃO DE REGRA OBRIGATÓRIA: transbordo_humano
             cliente_db = await supabase_service.get_cliente_whatsapp(empresa_id, phone_number)
             if cliente_db and cliente_db.get("transbordo_humano"):
-                await supabase_service.registrar_log("INFO", f"Transbordo humano ATIVO para cliente {phone_number} na loja {empresa_id}. Ignorando mensagem da IA.")
-                return
+                pausa_ate_str = cliente_db.get("pausa_ia_ate")
+                transbordo_at_str = cliente_db.get("transbordo_at")
+                is_expired = False
+                now_utc = datetime.now(timezone.utc)
+
+                if pausa_ate_str:
+                    try:
+                        pausa_ate = datetime.fromisoformat(pausa_ate_str.replace("Z", "+00:00"))
+                        if now_utc > pausa_ate:
+                            is_expired = True
+                    except Exception:
+                        pass
+                elif transbordo_at_str:
+                    try:
+                        transbordo_at = datetime.fromisoformat(transbordo_at_str.replace("Z", "+00:00"))
+                        if now_utc - transbordo_at > timedelta(hours=1):
+                            is_expired = True
+                    except Exception:
+                        pass
+
+                if is_expired:
+                    logger.info(f"Pausa de IA expirada para {phone_number}. Reativando IA automaticamente.")
+                    await supabase_service.set_transbordo_humano(empresa_id, phone_number, status=False)
+                else:
+                    logger.info(f"Transbordo humano ATIVO para {phone_number} na loja {empresa_id}. Ignorando.")
+                    return
 
             # 11. Indicador de presença imediata no WhatsApp
             presence_type = "recording" if message_type == "audioMessage" else "composing"
@@ -261,9 +286,15 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             elif message_type == "audioMessage":
                 if base64_data:
                     user_message_text = await audio_service.transcribe_audio(base64_data)
-                    await supabase_service.registrar_log("INFO", f"Audio transcrito: '{user_message_text}'")
+                    logger.info(f"Audio transcrito para {remote_jid}: '{user_message_text}'")
                 else:
-                    user_message_text = "[Cliente enviou um audio mas sem conteudo]"
+                    user_message_text = ""
+
+                if not user_message_text or not str(user_message_text).strip():
+                    fallback_audio_msg = "Desculpe, não consegui entender o áudio com clareza. 😊 Você poderia digitar ou enviar outro áudio?"
+                    await agent_service.save_message_to_history(session_id, "assistant", fallback_audio_msg)
+                    await evolution_service.send_text_message(instance, remote_jid, fallback_audio_msg)
+                    return
 
             elif message_type in ["locationMessage", "liveLocationMessage"]:
                 loc_data = message_obj.get("locationMessage") or message_obj.get("liveLocationMessage") or {}
@@ -289,8 +320,10 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             else:
                 user_message_text = message_obj.get("conversation") or caption or "Mensagem recebida"
 
-            if not user_message_text.strip():
+            if not user_message_text or not str(user_message_text).strip():
                 user_message_text = "Olá!"
+            else:
+                user_message_text = str(user_message_text).strip()
 
             # Manter presença ativa durante processamento da IA
             await evolution_service.send_presence(instance, remote_jid, presence_type)

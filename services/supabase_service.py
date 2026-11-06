@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 import httpx
 from config import settings
@@ -17,6 +18,13 @@ class SupabaseService:
 
     async def registrar_log(self, nivel: str, mensagem: str, detalhes: Optional[Dict[str, Any]] = None):
         """Grava logs e erros de tempo de execucao do Coolify diretamente no Supabase em tempo real"""
+        nivel_upper = (nivel or "").upper()
+        # Reduzir Disk IO no Supabase: mensagens rotineiras de webhook vao apenas pro log do container
+        if nivel_upper == "INFO":
+            if any(term in mensagem for term in ["DESABILITADO", "Webhook recebido", "Mensagem ignorada", "Mensagem recebida"]):
+                logger.info(f"[{nivel}] {mensagem}")
+                return
+
         url = f"{self.base_url}/rest/v1/logs_agente"
         payload = {
             "nivel": nivel,
@@ -128,10 +136,22 @@ class SupabaseService:
             emp_id_str = str(empresa_id)
         except Exception:
             emp_id_str = "43"
-        url = f"{self.base_url}/rest/v1/clientes_whatsapp?empresa_id=eq.{emp_id_str}&telefone=eq.{telefone}"
+        clean_phone = telefone.replace("@s.whatsapp.net", "").strip() if telefone else ""
+        url = f"{self.base_url}/rest/v1/clientes_whatsapp?empresa_id=eq.{emp_id_str}&or=(telefone.eq.{clean_phone},telefone.eq.{clean_phone}@s.whatsapp.net)"
+        
+        now_dt = datetime.now(timezone.utc)
+        payload = {"transbordo_humano": status}
+        if status:
+            payload["transbordo_at"] = now_dt.isoformat()
+            payload["pausa_ia_ate"] = (now_dt + timedelta(hours=1)).isoformat()
+            payload["transbordo_motivo"] = "Transbordo automatico acionado pelo agente"
+        else:
+            payload["transbordo_resolvido_at"] = now_dt.isoformat()
+            payload["pausa_ia_ate"] = None
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
-                res = await client.patch(url, headers=self.headers, json={"transbordo_humano": status})
+                res = await client.patch(url, headers=self.headers, json=payload)
                 return res.status_code < 300
             except Exception as e:
                 logger.error(f"Erro ao atualizar transbordo: {e}")
