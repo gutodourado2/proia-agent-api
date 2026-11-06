@@ -81,7 +81,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
     empresa_id = None
     try:
         # 1. Filtro estrito de eventos: processar apenas messages.upsert
-        event = body.get("event")
+        event = str(body.get("event") or "").lower().replace("_", ".")
         if event != "messages.upsert":
             return
 
@@ -99,16 +99,29 @@ async def process_whatsapp_message(body: Dict[str, Any]):
 
         # 🛡️ 2. BLINDAGEM CONTRA SINCRONIZAÇÃO DE HISTÓRICO ANTIGO DO WHATSAPP:
         # Quando um aparelho conecta à Evolution API, o WhatsApp Web descarrega mensagens antigas de sincronização.
-        # Mensagens enviadas há mais de 120 segundos (2 minutos) são descartadas imediatamente.
+        # Mensagens enviadas há mais de 15 minutos são descartadas imediatamente.
         message_timestamp = data.get("messageTimestamp")
         if message_timestamp:
             try:
+                # Extrair timestamp numérico caso venha como dict protobuf {'low': ...} ou int/str
+                if isinstance(message_timestamp, dict):
+                    ts_raw = float(message_timestamp.get("low", 0))
+                else:
+                    ts_raw = float(message_timestamp)
+                
+                # Se estiver em milissegundos (13 dígitos), normalizar para segundos
+                if ts_raw > 10_000_000_000:
+                    ts_raw = ts_raw / 1000.0
+
                 now_ts = time.time()
-                age_seconds = now_ts - float(message_timestamp)
-                if age_seconds > 120:
+                age_seconds = now_ts - ts_raw
+
+                # Apenas descartar se for histórico antigo real (> 15 minutos / 900s)
+                # Permitir folga ampla para celulares com relógio adiantado ou atrasado
+                if age_seconds > 900:
                     logger.info(f"Ignorando mensagem de histórico antigo ({age_seconds:.1f}s atrás) de {remote_jid}")
                     return
-                if age_seconds < -60:
+                if age_seconds < -3600:
                     logger.warning(f"Timestamp futuro anômalo ({age_seconds:.1f}s). Ignorando.")
                     return
             except Exception as e_ts:
@@ -424,7 +437,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
             background_tasks.add_task(forward_webhook_to_n8n, body)
 
         # 2. Se for evento de mensagem (messages.upsert), processar a IA de Vendas
-        event = body.get("event")
+        event = str(body.get("event") or "").lower().replace("_", ".")
         if event == "messages.upsert":
             background_tasks.add_task(process_whatsapp_message, body)
 
