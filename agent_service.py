@@ -378,9 +378,18 @@ class AgentService:
         logger.info(f"Agente: {contact_name} | Modelo: {model_name} | Loja: {slug_empresa}")
 
         # Build system prompt header (safe f-strings, only simple variables)
+        fuso_loja = empresa_data.get("fuso_horario") or "America/Sao_Paulo"
+        try:
+            from zoneinfo import ZoneInfo
+            agora_local = datetime.now(ZoneInfo(fuso_loja))
+        except Exception:
+            agora_local = datetime.now()
+        hora_local_str = agora_local.strftime('%d/%m/%Y %H:%M:%S')
+
         header = (
             f"CONTEXTO DA SESSAO:\n"
-            f"Data/Hora: {datetime.now().isoformat()}\n"
+            f"Data/Hora Local: {hora_local_str} (Fuso: {fuso_loja})\n"
+            f"Data Hoje: {agora_local.strftime('%Y-%m-%d')}\n"
             f"Empresa ID: {id_numerico_empresa}\n"
             f"Empresa UUID: {user_id_empresa}\n"
             f"Loja: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}\n"

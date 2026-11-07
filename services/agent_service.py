@@ -563,12 +563,16 @@ class AgentService:
             "Thursday": "Quinta-feira", "Friday": "Sexta-feira", "Saturday": "Sábado", "Sunday": "Domingo"
         }
         dia_nome = dias_semana.get(agora_local.strftime("%A"), agora_local.strftime("%A"))
+        data_hoje_iso = agora_local.strftime('%Y-%m-%d')
         hora_local_str = f"{dia_nome}, {agora_local.strftime('%d/%m/%Y às %H:%M:%S')} (Fuso: {fuso_loja})"
 
         # Build system prompt header
         header = (
             f"CONTEXTO DA SESSAO DA LOJA:\n"
             f"Data/Hora Atual Local da Loja: {hora_local_str}\n"
+            f"Data Oficial Hoje: {data_hoje_iso}\n"
+            f"Dia da Semana: {dia_nome}\n"
+            f"Fuso Horario Local da Loja: {fuso_loja}\n"
             f"Empresa ID: {id_numerico_empresa}\n"
             f"Empresa UUID: {user_id_empresa}\n"
             f"Loja: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}\n"
