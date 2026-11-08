@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # JEV SYSTEM ONE DECISION GATEWAY & ROLLBACK KILL-SWITCHES
     # -------------------------------------------------------------------------
-    ENABLE_JEV_GATEWAY: bool = False  # Kill-switch mestre. Se False, o sistema opera 100% como antes!
+    ENABLE_JEV_GATEWAY: bool = True  # Ativado: decisões estruturadas System One via OpenRouter
     ENABLE_JEV_PRINT_GATE: bool = True  # Trava de confirmação explícita antes de criar_pedido_completo
     ENABLE_JEV_ADDRESS_GATE: bool = True  # Trava de endereço por extenso (bloqueia PIN puro do WhatsApp)
     ENABLE_JEV_ORDER_ADDITIONS: bool = True  # Gestão inteligente de status do pedido em adições

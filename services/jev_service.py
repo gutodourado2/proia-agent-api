@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from config import settings
+from services.supabase_service import supabase_service
 
 logger = logging.getLogger("proia-agent-api.jev")
 
@@ -68,7 +69,12 @@ class JevService:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 res = await client.post(self.base_url, headers=headers, json=payload)
                 if res.status_code != 200:
-                    logger.error(f"[JEV] Erro HTTP {res.status_code}: {res.text[:200]}")
+                    err_msg = f"[JEV] Erro HTTP {res.status_code} na chamada OpenRouter: {res.text[:200]}"
+                    logger.error(err_msg)
+                    try:
+                        await supabase_service.registrar_log("ERROR", err_msg, {"model": self.model, "status": res.status_code})
+                    except Exception:
+                        pass
                     return None
                 
                 data = res.json()
@@ -82,12 +88,26 @@ class JevService:
                 
                 parsed = json.loads(clean_json_str)
                 logger.info(f"[JEV] Decisão tomada com sucesso: {parsed}")
+                try:
+                    await supabase_service.registrar_log("INFO", f"[JEV System One] Decisão executada ({self.model})", {"decisao": parsed})
+                except Exception:
+                    pass
                 return parsed
         except httpx.TimeoutException:
-            logger.warning(f"[JEV] Timeout de {self.timeout}s na chamada. Aplicando fallback de segurança.")
+            err_timeout = f"[JEV] Timeout de {self.timeout}s na chamada OpenRouter ({self.model}). Aplicando fallback."
+            logger.warning(err_timeout)
+            try:
+                await supabase_service.registrar_log("WARN", err_timeout)
+            except Exception:
+                pass
             return None
         except Exception as e:
-            logger.warning(f"[JEV] Falha ao consultar Jev ({e}). Aplicando fallback de segurança.")
+            err_gen = f"[JEV] Falha ao consultar OpenRouter ({self.model}): {e}"
+            logger.warning(err_gen)
+            try:
+                await supabase_service.registrar_log("WARN", err_gen)
+            except Exception:
+                pass
             return None
 
     # =========================================================================
@@ -340,3 +360,4 @@ class JevService:
         return False
 
 jev_service = JevService()
+
