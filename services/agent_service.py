@@ -467,7 +467,8 @@ class AgentService:
             elif name == "criar_pedido_completo":
                 if settings.ENABLE_JEV_GATEWAY and settings.ENABLE_JEV_PRINT_GATE:
                     ultimo_resumo = history[-1].get("content", "") if history else ""
-                    tipo_ent = args.get("p_tipo_entrega", "retirada")
+                    end_ent = str(args.get("p_endereco_entrega", "")).lower()
+                    tipo_ent = "retirada" if (not end_ent or "retirada" in end_ent) else "entrega"
                     is_ready, reason = await jev_service.verify_order_readiness(
                         carrinho=args,
                         ultimo_resumo_ia=ultimo_resumo,

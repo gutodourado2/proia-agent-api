@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 import httpx
@@ -211,13 +212,15 @@ class SupabaseService:
             emp_id = int(empresa_id) if str(empresa_id).isdigit() else 43
             tel_limpo = re.sub(r'\D', '', str(telefone))
             tel_busca = tel_limpo[-8:] if len(tel_limpo) >= 8 else tel_limpo
-            url = f"{self.base_url}/rest/v1/pedidos?empresa_id=eq.{emp_id}&telefone=ilike.*{tel_busca}*&order=id.desc&limit=1"
+            url = f"{self.base_url}/rest/v1/pedidos?empresa_id=eq.{emp_id}&telefone_cliente=ilike.*{tel_busca}*&order=id.desc&limit=1"
             async with httpx.AsyncClient(timeout=5.0) as client:
                 res = await client.get(url, headers=self.headers)
                 if res.status_code == 200:
                     data = res.json()
                     if isinstance(data, list) and len(data) > 0:
                         return data[0]
+                else:
+                    logger.warning(f"Erro HTTP {res.status_code} ao buscar ultimo pedido do cliente: {res.text[:200]}")
         except Exception as e:
             logger.warning(f"Erro ao buscar ultimo pedido do cliente: {e}")
         return None
@@ -244,7 +247,7 @@ class SupabaseService:
             "p_instancia": str(p_instancia),
             "p_origem_transbordo": "IA_AGENT"
         }
-        await self.set_transbordo_humano(p_telefone, True)
+        await self.set_transbordo_humano(emp_id_numeric, p_telefone, True)
         return await self.rpc("registrar_transbordo", payload)
 
 supabase_service = SupabaseService()
