@@ -264,6 +264,22 @@ class JevService:
             bool(re.search(r'\d+', raw_clean))
             or any(term in raw_lower for term in ["s/n", "sem numero", "sem número", "lote", "quadra"])
         )
+        tem_indicador_logradouro = bool(re.search(
+            r'\b(rua|r\.|av|av\.|avenida|travessa|tv\.|alameda|quadra|qd|lote|lt|estrada|rodovia|praça|praca|setor|condom[ií]nio|edif[ií]cio|bloco|lot\.|loteamento)\b',
+            raw_lower
+        ))
+        eh_apenas_referencia_vaga = (
+            any(term in raw_lower for term in ["do lado d", "ao lado d", "em frente a", "na frente d", "perto d", "atrás d", "atras d", "próximo a", "proximo a"])
+            and not tem_indicador_logradouro
+        )
+        if eh_apenas_referencia_vaga:
+            return {
+                "is_valid": False,
+                "is_pin_only": False,
+                "clean_address": "",
+                "delivery_notes": raw_clean,
+                "reason": "Cliente enviou apenas ponto de referência sem o nome oficial da Rua/Avenida e Bairro."
+            }
 
         state = {
             "cidade_oficial": cidade_loja,
@@ -275,16 +291,16 @@ class JevService:
                 "type": "noul",
                 "instructions": "O texto é apenas um link/PIN de localização ou referência vaga sem logradouro escrito?",
                 "criteria": {
-                    "true": "Contém apenas link de mapa, coordenadas ou texto dizendo que enviou localização sem endereço escrito.",
-                    "false": "Contém endereço escrito com nome de rua/avenida/quadra ou logradouro."
+                    "true": "Contém apenas link de mapa, coordenadas, ou apenas ponto de referência (ex: 'do lado de fulano') sem nome de rua/avenida.",
+                    "false": "Contém endereço escrito com nome real de rua/avenida/quadra/travessa."
                 }
             },
             "has_street_and_number": {
                 "type": "noul",
-                "instructions": "O endereço escrito possui logradouro (rua/av/quadra) E número predial (ou s/n, lote, bloco)?",
+                "instructions": "O endereço escrito possui nome real de logradouro (rua/av/quadra) E número predial (ou s/n, lote, bloco)?",
                 "criteria": {
-                    "true": "Identifica claramente rua/avenida/setor e número da casa, apartamento, quadra ou lote.",
-                    "false": "Falta número da residência/lote ou é apenas ponto de referência vago."
+                    "true": "Identifica claramente o nome da rua/avenida/setor e o número da casa, apartamento, quadra ou lote.",
+                    "false": "Falta número da residência/lote, falta nome da rua, ou é apenas ponto de referência."
                 }
             }
         }
@@ -293,13 +309,13 @@ class JevService:
         pin_prob = self._extract_noul_prob(answers, "is_pin_or_link_only")
         num_prob = self._extract_noul_prob(answers, "has_street_and_number")
 
-        if pin_prob is not None and pin_prob >= 0.80 and not tem_numero:
+        if pin_prob is not None and pin_prob >= 0.80 and (not tem_numero or not tem_indicador_logradouro):
             return {
                 "is_valid": False,
                 "is_pin_only": True,
                 "clean_address": "",
                 "delivery_notes": "",
-                "reason": "Jev detectou apenas referência ou localização sem endereço por escrito completo."
+                "reason": "Jev detectou apenas referência ou localização sem endereço por escrito completo (Rua, Número e Bairro)."
             }
 
         if not tem_numero and (num_prob is None or num_prob < 0.65):
@@ -308,7 +324,16 @@ class JevService:
                 "is_pin_only": False,
                 "clean_address": "",
                 "delivery_notes": "",
-                "reason": "Endereço sem número predial ou lote. Necessário solicitar número para cálculo exato."
+                "reason": "Endereço sem número predial ou lote. Necessário solicitar Rua, Número e Bairro para cálculo exato."
+            }
+
+        if num_prob is not None and num_prob < 0.35 and not tem_indicador_logradouro:
+            return {
+                "is_valid": False,
+                "is_pin_only": False,
+                "clean_address": "",
+                "delivery_notes": raw_clean,
+                "reason": "Endereço sem nome claro de Rua/Avenida e Bairro."
             }
 
         return {
@@ -328,63 +353,106 @@ class JevService:
         ultimo_pedido: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Identifica se o cliente está querendo adicionar itens a um pedido recente
-        e se o pedido já saiu para entrega (Status >= 3) ou ainda está na loja (Status < 3).
+        Identifica se o cliente está querendo adicionar/alterar itens em um pedido recente DE HOJE,
+        consultar o status de entrega ou fazer um novo pedido separado, verificando se o motoboy
+        já saiu (Status >= 3) ou se o pedido ainda está na cozinha (Status < 3).
         """
         if not ultimo_pedido:
-            return {"is_addition": False, "action": "standard_flow"}
+            return {"is_addition": False, "is_new_separate_order": False, "is_status_query": False, "action": "no_active_order_today"}
 
         status_pedido = int(ultimo_pedido.get("status", 1))
-        # Status convenção: 1 = Pendente, 2 = Em Preparo, 3 = Saiu para Entrega, 4 = Entregue, 5 = Cancelado
+        # Status convenção: 1 = Novo/Aceito, 2 = Em Preparo, 3 = Saiu para Entrega (Despacho), 4 = Entregue, 5 = Cancelado
         ja_saiu_para_entrega = (status_pedido >= 3)
+        endereco_atual = str(ultimo_pedido.get("endereco_entrega", "") or "")
+        modalidade_atual = "retirada" if "retirada" in endereco_atual.lower() else "entrega"
+        minutos_desde_criacao = float(ultimo_pedido.get("minutos_desde_criacao", 0) or 0)
+
+        msg_lower = (mensagem_cliente or "").lower()
+        regex_adicao = bool(re.search(
+            r'\b(adiciona|coloca|p[oõ]e|esqueci|mais um[a]?|acrescenta|manda tamb[eé]m|inclu[ia]|junto com|no mesmo pedido|troca|muda)\b',
+            msg_lower
+        ))
+        regex_status = bool(re.search(
+            r'\b(j[aá] saiu|cad[eê]|demora|t[aá] vindo|meu pedido|andamento|motoboy|entregador|previs[aã]o)\b',
+            msg_lower
+        ))
+        regex_novo_separado = bool(re.search(
+            r'\b(outro pedido|pedido separado|novo pedido)\b',
+            msg_lower
+        ))
 
         if not settings.ENABLE_JEV_GATEWAY or not settings.ENABLE_JEV_ORDER_ADDITIONS:
             return {
-                "is_addition": True,
+                "is_addition": regex_adicao and not regex_novo_separado,
+                "is_new_separate_order": regex_novo_separado,
+                "is_status_query": regex_status,
                 "ja_saiu_para_entrega": ja_saiu_para_entrega,
                 "status_id": status_pedido,
                 "pedido_id": ultimo_pedido.get("id"),
-                "action": "create_new_order_with_fee" if ja_saiu_para_entrega else "update_existing_no_fee"
+                "modalidade_atual": modalidade_atual,
+                "minutos_desde_criacao": minutos_desde_criacao,
+                "action": "create_new_order_with_fee" if (ja_saiu_para_entrega or regex_novo_separado) else "update_existing_no_fee"
             }
 
         state = {
             "mensagem_cliente": mensagem_cliente,
             "ultimo_pedido_id": ultimo_pedido.get("id"),
+            "minutos_desde_criacao": round(minutos_desde_criacao, 1),
+            "modalidade_pedido_atual": modalidade_atual,
             "status_atual_banco": status_pedido,
-            "status_descricao": "Saiu para Entrega" if ja_saiu_para_entrega else "Em Preparo / Pendente"
+            "status_descricao": "Saiu para Entrega / Finalizado" if ja_saiu_para_entrega else "Em Preparo / Na Cozinha"
         }
 
         questions = {
             "is_addition_intent": {
                 "type": "noul",
                 "instructions": (
-                    "O cliente quer adicionar, incluir ou acrescentar mais um item a um pedido que ele "
-                    "acabou de fazer (ex: 'esqueci a coca', 'coloca mais um tropeiro', 'inclui uma cerveja')?"
+                    "O cliente quer adicionar, incluir ou alterar algum item/observação/pagamento no pedido "
+                    "que ele acabou de fazer hoje (ex: 'esqueci a coca', 'coloca mais um tropeiro', 'manda uma pepsi junto')?"
                 ),
                 "criteria": {
-                    "true": "Mensagem pede expressamente para acrescentar ou incluir item no pedido anterior.",
-                    "false": "É um cumprimento, dúvida, reclamação ou novo pedido independente."
+                    "true": "Mensagem pede para acrescentar, incluir ou alterar item no pedido recente de hoje.",
+                    "false": "É apenas saudação, dúvida geral de cardápio, consulta de status ou novo pedido separado."
+                }
+            },
+            "is_status_query": {
+                "type": "noul",
+                "instructions": "O cliente está perguntando se o pedido já saiu para entrega ou qual o andamento do pedido?",
+                "criteria": {
+                    "true": "Pergunta sobre andamento, entrega, motoboy ou tempo de espera do pedido.",
+                    "false": "Não está perguntando andamento da entrega."
                 }
             }
         }
 
         answers = await self._call_jev(state, questions, gate_name="evaluate_order_addition")
-        prob = self._extract_noul_prob(answers, "is_addition_intent")
+        prob_add = self._extract_noul_prob(answers, "is_addition_intent")
+        prob_status = self._extract_noul_prob(answers, "is_status_query")
 
-        if prob is not None:
-            is_addition = prob >= 0.70
+        if prob_add is not None:
+            is_addition = (prob_add >= 0.65) and not regex_novo_separado
         else:
-            is_addition = bool(re.search(
-                r'\b(adiciona|coloca|p[oõ]e|esqueci|mais um[a]?|acrescenta|manda tamb[eé]m|inclu[ia])\b',
-                (mensagem_cliente or "").lower()
-            ))
+            is_addition = regex_adicao and not regex_novo_separado
+
+        if prob_status is not None:
+            is_status_query = prob_status >= 0.65
+        else:
+            is_status_query = regex_status
 
         return {
             "is_addition": is_addition,
+            "is_new_separate_order": regex_novo_separado,
+            "is_status_query": is_status_query,
             "ja_saiu_para_entrega": ja_saiu_para_entrega,
             "status_id": status_pedido,
             "pedido_id": ultimo_pedido.get("id"),
-            "action": "create_new_order_with_fee" if ja_saiu_para_entrega else "update_existing_no_fee"
+            "modalidade_atual": modalidade_atual,
+            "minutos_desde_criacao": minutos_desde_criacao,
+            "action": (
+                "create_new_order_with_fee"
+                if (ja_saiu_para_entrega or regex_novo_separado)
+                else ("update_existing_no_fee" if is_addition else ("answer_status" if is_status_query else "standard_flow"))
+            )
         }
 
     # =========================================================================

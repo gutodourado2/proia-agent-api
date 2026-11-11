@@ -89,6 +89,9 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         key = data.get("key", {})
 
         remote_jid = key.get("remoteJid", "")
+        remote_jid_alt = key.get("remoteJidAlt", "")
+        if remote_jid.endswith("@lid") and remote_jid_alt and "@s.whatsapp.net" in remote_jid_alt:
+            remote_jid = remote_jid_alt
         if not remote_jid or "g.us" in remote_jid or "broadcast" in remote_jid:
             return
 
@@ -212,12 +215,11 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             ).strip().lower()
             
             CLOSING_WORDS = {
-                "boa noite", "boa noite!", "bom dia", "bom dia!", "boa tarde", "boa tarde!",
-                "obrigado", "obrigada", "valeu", "valeu!", "ok", "ok!", "blz", "beleza",
-                "certinho", "show", "show de bola", "tchau", "tchau!", "flw", "tmj",
+                "obrigado", "obrigada", "valeu", "valeu!", "tchau", "tchau!", "flw", "tmj",
                 "de nada", "por nada", "encerrar", "encerrando", "até mais", "ate mais"
             }
-            if raw_text_for_check in CLOSING_WORDS:
+            recent_interaction = len([t for t in timestamps[:-1] if now_mono - t < 180]) > 0
+            if raw_text_for_check in CLOSING_WORDS and recent_interaction:
                 history = await agent_service.get_chat_history(session_id, limit=5)
                 if history and history[-1].get("role") == "assistant":
                     last_ai = history[-1].get("content", "").lower()
@@ -432,14 +434,14 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
         
-        # 1. Repassar eventos do Evolution API para o n8n em segundo plano
-        if settings.N8N_FORWARD_WEBHOOK_URL:
-            background_tasks.add_task(forward_webhook_to_n8n, body)
-
-        # 2. Se for evento de mensagem (messages.upsert), processar a IA de Vendas
+        # 1. Se for evento de mensagem (messages.upsert), disparar a IA de Vendas IMEDIATAMENTE sem fila bloqueante
         event = str(body.get("event") or "").lower().replace("_", ".")
         if event == "messages.upsert":
-            background_tasks.add_task(process_whatsapp_message, body)
+            asyncio.create_task(process_whatsapp_message(body))
+
+        # 2. Repassar eventos do Evolution API para o n8n apenas se explicitamente habilitado
+        if getattr(settings, "ENABLE_N8N_FORWARD", False) and settings.N8N_FORWARD_WEBHOOK_URL:
+            asyncio.create_task(forward_webhook_to_n8n(body))
 
         return JSONResponse(status_code=200, content={"status": "received"})
     except Exception as e:

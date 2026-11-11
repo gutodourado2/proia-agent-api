@@ -207,23 +207,99 @@ class SupabaseService:
     async def consultar_pedido(self, p_pedido_id: int):
         return await self.rpc("consultar_pedido", {"p_pedido_id": int(p_pedido_id)})
 
-    async def get_ultimo_pedido_cliente(self, empresa_id: Any, telefone: str) -> Optional[Dict[str, Any]]:
+    async def get_pedido_by_id(self, empresa_id: Any, pedido_id: int) -> Optional[Dict[str, Any]]:
         try:
             emp_id = int(empresa_id) if str(empresa_id).isdigit() else 43
-            tel_limpo = re.sub(r'\D', '', str(telefone))
-            tel_busca = tel_limpo[-8:] if len(tel_limpo) >= 8 else tel_limpo
-            url = f"{self.base_url}/rest/v1/pedidos?empresa_id=eq.{emp_id}&telefone_cliente=ilike.*{tel_busca}*&order=id.desc&limit=1"
+            url = f"{self.base_url}/rest/v1/pedidos?id=eq.{int(pedido_id)}&empresa_id=eq.{emp_id}&limit=1"
             async with httpx.AsyncClient(timeout=5.0) as client:
                 res = await client.get(url, headers=self.headers)
                 if res.status_code == 200:
                     data = res.json()
                     if isinstance(data, list) and len(data) > 0:
                         return data[0]
-                else:
-                    logger.warning(f"Erro HTTP {res.status_code} ao buscar ultimo pedido do cliente: {res.text[:200]}")
         except Exception as e:
-            logger.warning(f"Erro ao buscar ultimo pedido do cliente: {e}")
+            logger.warning(f"Erro ao buscar pedido #{pedido_id}: {e}")
         return None
+
+    async def get_pedido_ativo_hoje(
+        self,
+        empresa_id: Any,
+        telefone: str,
+        data_hoje_iso: Optional[str] = None,
+        max_hours: int = 3
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Busca APENAS pedido ativo do cliente feito HOJE (dentro das últimas `max_hours` horas).
+        Garante que pedidos de dias anteriores (ex: #1140) jamais sejam tratados como abertos.
+        """
+        try:
+            emp_id = int(empresa_id) if str(empresa_id).isdigit() else 43
+            tel_limpo = re.sub(r'\D', '', str(telefone))
+            tel_busca = tel_limpo[-8:] if len(tel_limpo) >= 8 else tel_limpo
+            if not tel_busca:
+                return None
+
+            now_utc = datetime.now(timezone.utc)
+            cutoff_iso = (now_utc - timedelta(hours=max_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            url = (
+                f"{self.base_url}/rest/v1/pedidos"
+                f"?empresa_id=eq.{emp_id}"
+                f"&telefone_cliente=ilike.*{tel_busca}*"
+                f"&created_at=gte.{cutoff_iso}"
+                f"&status=in.(1,2,3)"
+                f"&order=id.desc&limit=1"
+            )
+            if data_hoje_iso:
+                url += f"&data=eq.{data_hoje_iso}"
+
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                res = await client.get(url, headers=self.headers)
+                if res.status_code != 200:
+                    logger.warning(f"Erro HTTP {res.status_code} ao buscar pedido ativo de hoje: {res.text[:200]}")
+                    return None
+
+                data = res.json()
+                if not isinstance(data, list) or len(data) == 0:
+                    return None
+
+                pedido = data[0]
+                ped_id = pedido.get("id")
+
+                # Calcular minutos desde a criação
+                created_raw = pedido.get("created_at")
+                minutos_desde_criacao = 0.0
+                if created_raw:
+                    try:
+                        created_dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
+                        minutos_desde_criacao = max(0.0, (now_utc - created_dt).total_seconds() / 60.0)
+                    except Exception:
+                        pass
+                pedido["minutos_desde_criacao"] = round(minutos_desde_criacao, 1)
+
+                # Buscar os itens atuais desse pedido para que qualquer atualização preserve os itens anteriores
+                if ped_id:
+                    try:
+                        itens_url = (
+                            f"{self.base_url}/rest/v1/itens_pedido"
+                            f"?pedido_id=eq.{ped_id}"
+                            f"&select=id,produto_id,quantidade,preco_unitario,subtotal,produto_nome,itens_pedido_adicionais(opcao_adicional_id)"
+                        )
+                        res_itens = await client.get(itens_url, headers=self.headers)
+                        if res_itens.status_code == 200 and isinstance(res_itens.json(), list):
+                            pedido["itens_atuais"] = res_itens.json()
+                        else:
+                            pedido["itens_atuais"] = []
+                    except Exception:
+                        pedido["itens_atuais"] = []
+
+                return pedido
+        except Exception as e:
+            logger.warning(f"Erro ao buscar pedido ativo de hoje do cliente: {e}")
+        return None
+
+    async def get_ultimo_pedido_cliente(self, empresa_id: Any, telefone: str) -> Optional[Dict[str, Any]]:
+        return await self.get_pedido_ativo_hoje(empresa_id, telefone, max_hours=3)
 
     async def atualizar_pedido_completo(self, payload: Dict[str, Any]):
         raw = await self.rpc("atualizar_pedido_completo", payload)

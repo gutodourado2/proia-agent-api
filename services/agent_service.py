@@ -1,8 +1,10 @@
+import asyncio
 import json
 import re
+import time
 import logging
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import httpx
 from openai import AsyncOpenAI
@@ -329,6 +331,42 @@ Você é o atendente virtual inteligente do __EMPRESA_NOME__ (Modo Staging/Calib
 """
 
 class AgentService:
+    def __init__(self):
+        # Cache em memória para cálculo de frete por sessão (evita chamadas duplicadas ao Google Maps e garante taxa/lat/lng no fechamento)
+        self._delivery_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _get_cached_delivery(self, session_id: str, raw_address: str = "") -> Optional[Dict[str, Any]]:
+        if not session_id:
+            return None
+        cached = self._delivery_cache.get(session_id)
+        if not cached:
+            return None
+        if (time.monotonic() - cached.get("ts", 0)) > 1800:  # TTL 30 minutos
+            self._delivery_cache.pop(session_id, None)
+            return None
+        if raw_address:
+            norm_new = re.sub(r'\W+', '', raw_address.lower())
+            norm_old = re.sub(r'\W+', '', str(cached.get("raw_address", "")).lower())
+            norm_fmt = re.sub(r'\W+', '', str(cached.get("endereco_formatado", "")).lower())
+            if norm_new and norm_old and (norm_new in norm_old or norm_old in norm_new or (norm_fmt and norm_new in norm_fmt)):
+                return cached
+            return None
+        return cached
+
+    def _set_cached_delivery(self, session_id: str, raw_address: str, calc_res: Dict[str, Any]):
+        if not session_id or not isinstance(calc_res, dict) or not calc_res.get("sucesso"):
+            return
+        self._delivery_cache[session_id] = {
+            "raw_address": raw_address,
+            "endereco_formatado": calc_res.get("endereco_formatado") or raw_address,
+            "taxa_entrega": float(calc_res.get("taxa_entrega") or 0),
+            "latitude": float(calc_res.get("latitude") or 0),
+            "longitude": float(calc_res.get("longitude") or 0),
+            "distancia_km": float(calc_res.get("distancia_km") or 0),
+            "result": calc_res,
+            "ts": time.monotonic()
+        }
+
     def get_client_for_model(self, target_model: Optional[str] = None):
         model_name = target_model or settings.MODEL_NAME
         # Tratamento de segurança para nomes de modelo incorretos no OpenRouter:
@@ -355,13 +393,28 @@ class AgentService:
             client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
             return client, model_name
 
-    async def get_chat_history(self, session_id: str, limit: int = 30) -> List[Dict[str, Any]]:
-
-        url = f"{supabase_service.base_url}/rest/v1/n8n_chat_histories?session_id=eq.{session_id}&order=id.desc&limit={limit}"
+    async def get_chat_history(self, session_id: str, limit: int = 12, max_hours: int = 6) -> List[Dict[str, Any]]:
+        """
+        Carrega apenas o histórico da SESSÃO ATIVA DE HOJE (últimas `max_hours` horas, limite enxuto de 12 msgs).
+        Evita que pedidos de dias anteriores (ex: #1140) contaminem o contexto atual e reduz em >50% o gasto de tokens.
+        """
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=max_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        url = (
+            f"{supabase_service.base_url}/rest/v1/n8n_chat_histories"
+            f"?session_id=eq.{session_id}"
+            f"&created_at=gte.{cutoff_iso}"
+            f"&order=id.desc&limit={limit}"
+        )
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 res = await client.get(url, headers=supabase_service.headers)
+                if res.status_code != 200:
+                    # Fallback seguro caso a coluna created_at ainda não esteja visível no cache do PostgREST
+                    fallback_url = f"{supabase_service.base_url}/rest/v1/n8n_chat_histories?session_id=eq.{session_id}&order=id.desc&limit={limit}"
+                    res = await client.get(fallback_url, headers=supabase_service.headers)
                 data = res.json()
+                if not isinstance(data, list):
+                    return []
                 data.reverse()
                 messages = []
                 for row in data:
@@ -388,7 +441,7 @@ class AgentService:
             "message": {
                 "type": msg_type,
                 "content": clean_content,
-                "additional_kwargs": {},
+                "additional_kwargs": {"timestamp": datetime.now(timezone.utc).isoformat()},
                 "response_metadata": {}
             }
         }
@@ -407,7 +460,9 @@ class AgentService:
         remote_jid: str = "",
         user_message: str = "",
         history: Optional[List[Dict[str, Any]]] = None,
-        cidade_loja: str = "Luís Eduardo Magalhães - BA"
+        cidade_loja: str = "Luís Eduardo Magalhães - BA",
+        session_id: str = "",
+        pedido_ativo_hoje: Optional[Dict[str, Any]] = None
     ) -> str:
         try:
             if "p_empresa_id" in args:
@@ -443,8 +498,8 @@ class AgentService:
             elif name == "buscar_enderecos_cliente":
                 res = await supabase_service.buscar_enderecos_cliente(**args)
             elif name == "calcular_entrega_completa":
+                raw_addr = str(args.get("p_endereco", "") or "").strip()
                 if settings.ENABLE_JEV_GATEWAY and settings.ENABLE_JEV_ADDRESS_GATE:
-                    raw_addr = args.get("p_endereco", "")
                     val = await jev_service.validate_address_text(raw_addr, cidade_loja=cidade_loja)
                     if not val.get("is_valid", True):
                         logger.warning(f"[JEV GATEWAY] Endereço bloqueado: {val.get('reason')}")
@@ -454,21 +509,86 @@ class AgentService:
                             "motivo": val.get("reason"),
                             "orientacao_para_o_agente": (
                                 "NÃO invente taxa de entrega e NÃO conclua o frete ainda! "
-                                "O endereço fornecido está incompleto (faltou número predial ou bairro, ou foi apenas um PIN/link). "
+                                "O endereço fornecido está incompleto (faltou nome da Rua, Número predial ou Bairro, ou foi apenas referência/localização). "
                                 "Peça gentilmente para o cliente digitar o endereço completo por escrito com o nome da Rua, "
                                 "o Número da casa (ou quadra/lote) e o Bairro para calcularmos a taxa exata."
                             )
                         }, ensure_ascii=False)
                     if val.get("clean_address"):
                         args["p_endereco"] = val["clean_address"]
-                res = await supabase_service.calcular_entrega_completa(**args)
+
+                # Verificar cache de sessão para evitar chamadas repetidas ao Google Maps
+                cached_calc = self._get_cached_delivery(session_id, args.get("p_endereco", ""))
+                if cached_calc and isinstance(cached_calc.get("result"), dict):
+                    logger.info(f"[CACHE FRETE] Reutilizando cálculo de entrega da sessão {session_id}")
+                    res = cached_calc["result"]
+                else:
+                    res = await supabase_service.calcular_entrega_completa(**args)
+                    if isinstance(res, dict) and res.get("sucesso"):
+                        self._set_cached_delivery(session_id, raw_addr, res)
             elif name == "buscar_adicionais_produto":
                 res = await supabase_service.buscar_adicionais_produto(**args)
             elif name == "criar_pedido_completo":
+                end_ent = str(args.get("p_endereco_entrega", "") or "").strip()
+                tipo_ent = "retirada" if (not end_ent or "retirada" in end_ent.lower()) else "entrega"
+
+                # 1. Proteção de Novo Pedido (#ID Novo): se não há pedido ativo hoje ou se o pedido anterior já saiu (status >= 3), forçar novo ID
+                if not pedido_ativo_hoje or int(pedido_ativo_hoje.get("status", 1)) >= 3:
+                    args["p_forcar_novo"] = True
+
+                # 2. Blindagem de Endereço e Frete Obrigatório para Entregas (Zero taxa R$ 0,00 ou endereço sem rua/número)
+                if tipo_ent == "entrega":
+                    if settings.ENABLE_JEV_GATEWAY and settings.ENABLE_JEV_ADDRESS_GATE:
+                        val_addr = await jev_service.validate_address_text(end_ent, cidade_loja=cidade_loja)
+                        if not val_addr.get("is_valid", True):
+                            logger.warning(f"[JEV GATEWAY] Bloqueio de criar_pedido_completo por endereço inválido: {val_addr.get('reason')}")
+                            return json.dumps({
+                                "sucesso": False,
+                                "erro": "endereco_invalido_para_entrega",
+                                "motivo": val_addr.get("reason"),
+                                "orientacao_para_o_agente": (
+                                    "PARE! O endereço de entrega informado está incompleto (sem nome de Rua, Número ou Bairro). "
+                                    "Solicite ao cliente o endereço completo por escrito (Rua, Número e Bairro) e execute "
+                                    "`calcular_entrega_completa` antes de finalizar o pedido!"
+                                )
+                            }, ensure_ascii=False)
+
+                    # Preencher automaticamente taxa e coordenadas a partir do cache da sessão ou calcular agora
+                    cached_deliv = self._get_cached_delivery(session_id)
+                    if cached_deliv:
+                        if float(args.get("p_taxa_entrega") or 0) <= 0:
+                            args["p_taxa_entrega"] = cached_deliv["taxa_entrega"]
+                        if float(args.get("p_latitude_entrega") or 0) == 0:
+                            args["p_latitude_entrega"] = cached_deliv["latitude"]
+                        if float(args.get("p_longitude_entrega") or 0) == 0:
+                            args["p_longitude_entrega"] = cached_deliv["longitude"]
+                        if float(args.get("p_distancia_km") or 0) == 0:
+                            args["p_distancia_km"] = cached_deliv["distancia_km"]
+                    elif float(args.get("p_taxa_entrega") or 0) <= 0 or float(args.get("p_latitude_entrega") or 0) == 0:
+                        calc_auto = await supabase_service.calcular_entrega_completa(
+                            p_empresa_id=args.get("p_empresa_id", default_user_id),
+                            p_endereco=end_ent
+                        )
+                        if not isinstance(calc_auto, dict) or not calc_auto.get("sucesso"):
+                            motivo_calc = calc_auto.get("mensagem") if isinstance(calc_auto, dict) else "Não foi possível localizar o endereço no mapa."
+                            return json.dumps({
+                                "sucesso": False,
+                                "erro": "frete_nao_calculado",
+                                "motivo": motivo_calc,
+                                "orientacao_para_o_agente": (
+                                    f"PARE! Não foi possível validar a rota/taxa para '{end_ent}': {motivo_calc}. "
+                                    "Confirme com o cliente o nome correto da Rua, Número e Bairro antes de criar o pedido!"
+                                )
+                            }, ensure_ascii=False)
+                        self._set_cached_delivery(session_id, end_ent, calc_auto)
+                        args["p_taxa_entrega"] = float(calc_auto.get("taxa_entrega") or 0)
+                        args["p_latitude_entrega"] = float(calc_auto.get("latitude") or 0)
+                        args["p_longitude_entrega"] = float(calc_auto.get("longitude") or 0)
+                        args["p_distancia_km"] = float(calc_auto.get("distancia_km") or 0)
+
+                # 3. Trava JEV de Confirmação Final / Impressão na Cozinha
                 if settings.ENABLE_JEV_GATEWAY and settings.ENABLE_JEV_PRINT_GATE:
                     ultimo_resumo = history[-1].get("content", "") if history else ""
-                    end_ent = str(args.get("p_endereco_entrega", "")).lower()
-                    tipo_ent = "retirada" if (not end_ent or "retirada" in end_ent) else "entrega"
                     is_ready, reason = await jev_service.verify_order_readiness(
                         carrinho=args,
                         ultimo_resumo_ia=ultimo_resumo,
@@ -493,6 +613,71 @@ class AgentService:
             elif name == "consultar_pedido":
                 res = await supabase_service.consultar_pedido(**args)
             elif name == "atualizar_pedido_completo":
+                p_pedido_id = int(args.get("p_pedido_id") or 0)
+                pedido_alvo = None
+                if pedido_ativo_hoje and int(pedido_ativo_hoje.get("id") or 0) == p_pedido_id:
+                    pedido_alvo = pedido_ativo_hoje
+                elif p_pedido_id > 0:
+                    pedido_alvo = await supabase_service.get_pedido_by_id(args.get("p_empresa_id", 43), p_pedido_id)
+
+                # 🛑 TRAVA FÍSICA 1: Pedido inexistente ou de outro dia
+                if not pedido_alvo:
+                    return json.dumps({
+                        "sucesso": False,
+                        "erro": "PEDIDO_ANTIGO_OU_INEXISTENTE",
+                        "orientacao_para_o_agente": (
+                            f"PARE! O Pedido #{p_pedido_id} não é um pedido ativo de hoje. "
+                            "JAMAIS tente atualizar pedidos de dias anteriores! "
+                            "Chame `criar_pedido_completo` com `p_forcar_novo: true` para criar um novo pedido de hoje."
+                        )
+                    }, ensure_ascii=False)
+
+                # 🛑 TRAVA FÍSICA 2: Pedido já saiu para entrega (Status >= 3)
+                status_alvo = int(pedido_alvo.get("status", 1))
+                if status_alvo >= 3:
+                    logger.warning(f"[JEV GATEWAY] Bloqueio de atualização: Pedido #{p_pedido_id} já saiu (status={status_alvo})")
+                    return json.dumps({
+                        "sucesso": False,
+                        "bloqueio_status_entrega": True,
+                        "erro": "PEDIDO_JA_SAIU_PARA_ENTREGA",
+                        "status_atual": status_alvo,
+                        "orientacao_para_o_agente": (
+                            f"PARE! O Pedido #{p_pedido_id} JÁ SAIU PARA ENTREGA com o motoboy (Status {status_alvo}) "
+                            "e NÃO pode mais receber novos itens na mesma viagem! "
+                            f"Informe ao cliente que o Pedido #{p_pedido_id} já saiu para entrega e pergunte se ele deseja "
+                            "abrir um NOVO PEDIDO separado (avisando que haverá uma nova taxa de entrega). "
+                            "Se o cliente confirmar, chame `criar_pedido_completo` com `p_forcar_novo: true`."
+                        )
+                    }, ensure_ascii=False)
+
+                # 🛡️ PROTEÇÃO DE ITENS ANTERIORES: Se a mensagem do cliente é pura adição e a LLM omitiu itens que já estavam no pedido, preservá-los!
+                itens_novos = args.get("p_itens")
+                itens_antigos = pedido_alvo.get("itens_atuais") or []
+                msg_low = (user_message or "").lower()
+                eh_remocao_ou_troca = bool(re.search(r'\b(troca|trocar|tira|tirar|remove|remover|cancela|cancelar|sem o|ao inv[eé]s)\b', msg_low))
+                if isinstance(itens_novos, list) and len(itens_novos) > 0 and len(itens_antigos) > 0 and not eh_remocao_ou_troca:
+                    ids_novos = {int(i.get("produto_id") or 0) for i in itens_novos if isinstance(i, dict)}
+                    itens_preservados = []
+                    for ant in itens_antigos:
+                        pid_ant = int(ant.get("produto_id") or 0)
+                        if pid_ant > 0 and pid_ant not in ids_novos:
+                            adicionais_raw = ant.get("itens_pedido_adicionais") or []
+                            adicionais_ids = [
+                                int(a.get("opcao_adicional_id"))
+                                for a in adicionais_raw
+                                if isinstance(a, dict) and a.get("opcao_adicional_id") is not None
+                            ]
+                            item_obj: Dict[str, Any] = {
+                                "produto_id": pid_ant,
+                                "quantidade": int(ant.get("quantidade") or 1)
+                            }
+                            if adicionais_ids:
+                                item_obj["adicionais"] = adicionais_ids
+                            itens_preservados.append(item_obj)
+                    if itens_preservados:
+                        logger.info(f"[AUTO-MERGE ITENS] Preservando {len(itens_preservados)} item(ns) anterior(es) no Pedido #{p_pedido_id}")
+                        args["p_itens"] = itens_preservados + itens_novos
+
                 res = await supabase_service.atualizar_pedido_completo(args)
             elif name == "escalar_atendimento_humano":
                 if settings.ENABLE_JEV_GATEWAY:
@@ -545,14 +730,7 @@ class AgentService:
         chosen_model = model_override or active_profile.model_name
         client, model_name = self.get_client_for_model(chosen_model)
 
-        history = await self.get_chat_history(session_id, limit=30)
-
-        eh_cliente_novo = (len(history) == 0)
-        prompt_customizado_loja = empresa_data.get("prompt_customizado") or empresa_data.get("regras_adicionais") or ""
-
-        logger.info(f"Agente: {contact_name} | Perfil: {active_profile.name} | Modelo: {model_name} | Loja ID: {id_numerico_empresa} ({slug_empresa}) | Session: {session_id} | Novo: {eh_cliente_novo}")
-
-        # Calcular fuso horario local exato da loja no Brasil
+        # Calcular fuso horario local exato da loja no Brasil ANTES de consultar pedidos e histórico do dia
         fuso_loja = empresa_data.get("fuso_horario") or "America/Sao_Paulo"
         try:
             agora_local = datetime.now(ZoneInfo(fuso_loja))
@@ -567,6 +745,35 @@ class AgentService:
         data_hoje_iso = agora_local.strftime('%Y-%m-%d')
         hora_local_str = f"{dia_nome}, {agora_local.strftime('%d/%m/%Y às %H:%M:%S')} (Fuso: {fuso_loja})"
 
+        # Consultar em paralelo: 1) Histórico da sessão ativa (últimas 6h), 2) Pedido ativo de hoje (últimas 3h), 3) Endereços salvos do cliente
+        history, pedido_ativo_hoje, enderecos_res = await asyncio.gather(
+            self.get_chat_history(session_id, limit=12, max_hours=6),
+            supabase_service.get_pedido_ativo_hoje(id_numerico_empresa, phone_number, data_hoje_iso=data_hoje_iso, max_hours=3),
+            supabase_service.buscar_enderecos_cliente(phone_number),
+            return_exceptions=True
+        )
+        if isinstance(history, Exception) or not isinstance(history, list):
+            history = []
+        if isinstance(pedido_ativo_hoje, Exception) or not isinstance(pedido_ativo_hoje, dict):
+            pedido_ativo_hoje = None
+
+        enderecos_salvos_str = "Nenhum endereço salvo anteriormente."
+        if isinstance(enderecos_res, dict) and enderecos_res.get("sucesso") and isinstance(enderecos_res.get("enderecos"), list):
+            end_list = enderecos_res["enderecos"]
+            if len(end_list) > 0:
+                end_principal = end_list[0]
+                end_fmt = end_principal.get("endereco_formatado") or f"{end_principal.get('rua', '')}, {end_principal.get('numero', '')} - {end_principal.get('bairro', '')}"
+                enderecos_salvos_str = f"Endereço salvo do cliente: {end_fmt}"
+
+        eh_cliente_novo = (len(history) == 0 and pedido_ativo_hoje is None)
+        prompt_customizado_loja = empresa_data.get("prompt_customizado") or empresa_data.get("regras_adicionais") or ""
+
+        logger.info(
+            f"Agente: {contact_name} | Perfil: {active_profile.name} | Modelo: {model_name} | "
+            f"Loja ID: {id_numerico_empresa} ({slug_empresa}) | Session: {session_id} | "
+            f"PedidoAtivoHoje: #{pedido_ativo_hoje.get('id') if pedido_ativo_hoje else 'Nenhum'}"
+        )
+
         # Build system prompt header
         header = (
             f"CONTEXTO DA SESSAO DA LOJA:\n"
@@ -578,10 +785,11 @@ class AgentService:
             f"Empresa UUID: {user_id_empresa}\n"
             f"Loja: {empresa_data.get('categoria', '')} {empresa_data.get('nome_empresa', '')}\n"
             f"Slug: {slug_empresa}\n"
+            f"Cardapio Digital: {cardapio_digital_url}\n"
             f"Endereco Loja: {endereco_loja_oficial}\n"
             f"Cliente: {contact_name}\n"
             f"Telefone: {phone_number}\n"
-            f"Cliente Novo (Sem Historico): {eh_cliente_novo}\n"
+            f"Enderecos Salvos do Cliente: {enderecos_salvos_str}\n"
             f"REGRAS ESPECIFICAS DA LOJA (PROMPT CUSTOMIZADO):\n"
             f"{prompt_customizado_loja if prompt_customizado_loja else 'Nenhuma regra customizada extra.'}\n\n"
             f"Horario e Regras da Loja: {empresa_data.get('regras_adicionais', 'Terça a Domingo das 09:00 às 15:00')}\n"
@@ -600,38 +808,80 @@ class AgentService:
             regras_adicionais=prompt_customizado_loja
         )
 
-        # Verificação inteligente de Adição de Itens a Pedido Recente via Jev
+        # 🧠 INTELIGÊNCIA JEV SYSTEM ONE: Estado de Pedido Ativo de Hoje vs. Sem Pedido Hoje
         contexto_adicao_extra = ""
-        if settings.ENABLE_JEV_GATEWAY and settings.ENABLE_JEV_ORDER_ADDITIONS and not eh_cliente_novo:
+        if not pedido_ativo_hoje:
+            # 🚫 Diretiva Determinística Negativa: ZERO chamadas ao JEV e ZERO chance de perguntar sobre pedidos antigos (#1140)
+            contexto_adicao_extra = (
+                f"\n🚫 ESTADO ATUAL DE PEDIDOS DO CLIENTE HOJE ({data_hoje_iso}):\n"
+                f"Este cliente NÃO possui nenhum pedido ativo ou aberto hoje.\n"
+                f"REGRA ABSOLUTA: JAMAIS pergunte se ele deseja adicionar itens a um pedido anterior, "
+                f"JAMAIS mencione números de pedidos antigos (#ID) e trate qualquer compra como um NOVO PEDIDO independente!\n\n"
+            )
+        else:
             try:
-                ultimo_ped = await supabase_service.get_ultimo_pedido_cliente(id_numerico_empresa, phone_number)
-                if ultimo_ped:
-                    adicao_check = await jev_service.evaluate_order_addition(user_message, ultimo_ped)
-                    if adicao_check.get("is_addition"):
-                        ped_id = ultimo_ped.get("id")
-                        status_id = int(ultimo_ped.get("status", 1))
-                        if adicao_check.get("ja_saiu_para_entrega"):
-                            contexto_adicao_extra = (
-                                f"\n⚠️ ATENÇÃO OPERACIONAL CRÍTICA DE STATUS DO PEDIDO:\n"
-                                f"O cliente deseja adicionar itens, mas o Pedido #{ped_id} JÁ SAIU PARA ENTREGA (Status {status_id} - Despacho/Rota)!\n"
-                                f"O motoboy já está na rua e não pode levar mais nada naquela viagem.\n"
-                                f"INFORME AO CLIENTE que o Pedido #{ped_id} já saiu para entrega e pergunte se ele deseja abrir um NOVO PEDIDO com NOVA TAXA DE ENTREGA!\n"
-                                f"JAMAIS chame atualizar_pedido_completo para esse pedido!\n\n"
-                            )
-                        else:
-                            contexto_adicao_extra = (
-                                f"\n✅ ATENÇÃO OPERACIONAL DE ADIÇÃO DE ITENS (PEDIDO AINDA NA LOJA):\n"
-                                f"O cliente deseja adicionar itens ao Pedido #{ped_id} que AINDA ESTÁ NA LOJA (Status {status_id} - Em Preparo/Pendente).\n"
-                                f"NÃO COBRE NOVA TAXA DE ENTREGA! Use a mesma viagem do motoboy.\n"
-                                f"Chame 'atualizar_pedido_completo' para incluir os novos itens.\n"
-                                f"Se o pedido anterior já foi pago no PIX, cobre APENAS A DIFERENÇA dos novos itens!\n\n"
-                            )
+                ped_id = pedido_ativo_hoje.get("id")
+                status_id = int(pedido_ativo_hoje.get("status", 1))
+                mins_criacao = float(pedido_ativo_hoje.get("minutos_desde_criacao", 0) or 0)
+                end_atual = str(pedido_ativo_hoje.get("endereco_entrega", "") or "")
+                modalidade_atual = "Retirada na loja" if "retirada" in end_atual.lower() else f"Entrega ({end_atual})"
+                valor_atual = pedido_ativo_hoje.get("valor_total", "0.00")
+                pgto_atual = pedido_ativo_hoje.get("forma_pagamento", "")
+                itens_atuais_raw = pedido_ativo_hoje.get("itens_atuais") or []
+                itens_resumo_list = []
+                for it in itens_atuais_raw:
+                    if isinstance(it, dict):
+                        itens_resumo_list.append(
+                            f"{it.get('quantidade', 1)}x {it.get('produto_nome', 'Item')} (produto_id={it.get('produto_id')})"
+                        )
+                itens_resumo_str = ", ".join(itens_resumo_list) if itens_resumo_list else "Itens registrados no banco"
+
+                if settings.ENABLE_JEV_GATEWAY and settings.ENABLE_JEV_ORDER_ADDITIONS:
+                    adicao_check = await jev_service.evaluate_order_addition(user_message, pedido_ativo_hoje)
+                else:
+                    adicao_check = {
+                        "is_addition": False,
+                        "is_status_query": False,
+                        "ja_saiu_para_entrega": status_id >= 3
+                    }
+
+                if status_id >= 3:
+                    contexto_adicao_extra = (
+                        f"\n⚠️ ATENÇÃO OPERACIONAL CRÍTICA (PEDIDO #{ped_id} JÁ SAIU PARA ENTREGA - STATUS {status_id}):\n"
+                        f"O Pedido #{ped_id} ({modalidade_atual}, R$ {valor_atual}) JÁ SAIU COM O MOTOBOY ou já foi concluído!\n"
+                        f"- Se o cliente pedir para adicionar qualquer item, INFORME IMEDIATAMENTE que o Pedido #{ped_id} já saiu para entrega e não é possível incluir itens na mesma viagem.\n"
+                        f"- Pergunte se ele deseja abrir um NOVO PEDIDO separado (avisando que haverá nova taxa de entrega se for delivery).\n"
+                        f"- JAMAIS chame `atualizar_pedido_completo` para o Pedido #{ped_id}! Se ele confirmar um novo pedido, use `criar_pedido_completo` com `p_forcar_novo: true`.\n\n"
+                    )
+                elif adicao_check.get("is_addition"):
+                    contexto_adicao_extra = (
+                        f"\n✅ ATENÇÃO OPERACIONAL DE ADIÇÃO DE ITENS (PEDIDO #{ped_id} AINDA NA LOJA - STATUS {status_id}):\n"
+                        f"O cliente deseja adicionar/alterar itens no Pedido #{ped_id} feito hoje há {mins_criacao:.0f} min ({modalidade_atual}, Total atual: R$ {valor_atual}, Pagamento: {pgto_atual}).\n"
+                        f"Itens que JÁ estão no Pedido #{ped_id}: {itens_resumo_str}.\n"
+                        f"- O pedido AINDA ESTÁ NA COZINHA (o motoboy NÃO saiu): NÃO COBRE NOVA TAXA DE ENTREGA!\n"
+                        f"- Chame `atualizar_pedido_completo` para o Pedido #{ped_id} enviando em `p_itens` os itens anteriores + os novos itens.\n"
+                        f"- Se o pedido anterior já foi pago no PIX, cobre APENAS A DIFERENÇA dos novos itens!\n\n"
+                    )
+                elif adicao_check.get("is_status_query"):
+                    status_nome = "Em Preparo na cozinha" if status_id == 2 else "Recebido e em fila de preparo"
+                    contexto_adicao_extra = (
+                        f"\nℹ️ CONSULTA DE ANDAMENTO DO PEDIDO #{ped_id} (HOJE):\n"
+                        f"O Pedido #{ped_id} foi feito há {mins_criacao:.0f} min ({modalidade_atual}, R$ {valor_atual}) e está com status: {status_nome} (ainda na loja).\n"
+                        f"Responda de forma tranquila e prestativa informando o andamento atual.\n\n"
+                    )
+                else:
+                    contexto_adicao_extra = (
+                        f"\nℹ️ PEDIDO RECENTE DO CLIENTE HOJE (#{ped_id} - há {mins_criacao:.0f} min):\n"
+                        f"Itens: {itens_resumo_str} | Modalidade: {modalidade_atual} | Total: R$ {valor_atual} | Status: {status_id} (Ainda na loja).\n"
+                        f"- Se o cliente estiver apenas tirando uma dúvida, responda normalmente sem insistir.\n"
+                        f"- Se ele quiser acrescentar item a este Pedido #{ped_id} na mesma modalidade, use `atualizar_pedido_completo`.\n"
+                        f"- Se for um pedido separado ou de modalidade diferente (ex: mudar de retirada para entrega), use `criar_pedido_completo` com `p_forcar_novo: true`.\n\n"
+                    )
             except Exception as e_add:
                 logger.warning(f"Erro ao avaliar adicao de pedido Jev: {e_add}")
 
         system_prompt = header + contexto_adicao_extra + "\n" + body
 
-        
         # Mensagem do usuario (salvar apenas na primeira tentativa para nao duplicar em caso de fallback)
         if save_user_message:
             await self.save_message_to_history(session_id, "user", user_message)
@@ -681,7 +931,9 @@ class AgentService:
                     remote_jid=remote_jid,
                     user_message=user_message,
                     history=history,
-                    cidade_loja=empresa_data.get("cidade") or "Luís Eduardo Magalhães - BA"
+                    cidade_loja=empresa_data.get("cidade") or "Luís Eduardo Magalhães - BA",
+                    session_id=session_id,
+                    pedido_ativo_hoje=pedido_ativo_hoje
                 )
                 await supabase_service.registrar_log("INFO", f"Tool {fn_name} executada", {"args": fn_args, "res_len": len(tool_result_str), "snippet": tool_result_str[:250]})
                 
