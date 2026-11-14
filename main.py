@@ -51,6 +51,76 @@ app = FastAPI(
 active_locks: Dict[str, asyncio.Lock] = {}
 PROCESSED_MESSAGE_CACHE: Dict[str, float] = {}
 SESSION_MESSAGE_TIMESTAMPS: Dict[str, List[float]] = {}
+SESSION_MESSAGE_TEXTS: Dict[str, List[str]] = {}
+
+BOT_AUTO_REPLY_MARKERS = (
+    "mensagem automática",
+    "mensagem automatica",
+    "atendimento automático",
+    "atendimento automatico",
+    "ausente no momento",
+    "não estamos disponíveis no momento",
+    "nao estamos disponiveis no momento",
+)
+
+
+def _extract_text_from_message_obj(message_obj: Dict[str, Any], caption: str = "") -> str:
+    """Extrai texto de qualquer envelope comum do Baileys/Evolution API v2."""
+    if not isinstance(message_obj, dict):
+        return caption or ""
+
+    # Desembrulha mensagens efêmeras / viewOnce / documentWithCaption se presentes
+    for wrapper_key in ("ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "documentWithCaptionMessage"):
+        wrapped = message_obj.get(wrapper_key)
+        if isinstance(wrapped, dict) and isinstance(wrapped.get("message"), dict):
+            nested = _extract_text_from_message_obj(wrapped["message"], caption=caption)
+            if nested:
+                return nested
+
+    direct_text = (
+        message_obj.get("conversation")
+        or (message_obj.get("extendedTextMessage") or {}).get("text")
+        or (message_obj.get("buttonsResponseMessage") or {}).get("selectedDisplayText")
+        or (message_obj.get("listResponseMessage") or {}).get("title")
+        or (message_obj.get("templateButtonReplyMessage") or {}).get("selectedDisplayText")
+        or ""
+    )
+    if direct_text and str(direct_text).strip():
+        return str(direct_text).strip()
+
+    # Interactive / Native flow responses
+    interactive = message_obj.get("interactiveResponseMessage") or {}
+    if isinstance(interactive, dict):
+        body_text = (interactive.get("body") or {}).get("text")
+        native_params = (interactive.get("nativeFlowResponseMessage") or {}).get("paramsJson")
+        if body_text and str(body_text).strip():
+            return str(body_text).strip()
+        if native_params and str(native_params).strip():
+            return str(native_params).strip()
+
+    # Template messages (hydratedTemplate / fourRowTemplate)
+    template_msg = message_obj.get("templateMessage") or {}
+    if isinstance(template_msg, dict):
+        hydrated = template_msg.get("hydratedTemplate") or template_msg.get("hydratedFourRowTemplate") or {}
+        if isinstance(hydrated, dict):
+            tpl_text = hydrated.get("hydratedContentText") or hydrated.get("hydratedTitleText") or ""
+            if tpl_text and str(tpl_text).strip():
+                return str(tpl_text).strip()
+
+    return str(caption).strip() if caption else ""
+
+
+async def _send_text_with_log(instance: str, remote_jid: str, text: str, context: str = "resposta_ia") -> bool:
+    """Envia mensagem pela Evolution API e registra ERROR no Supabase se falhar."""
+    sent = await evolution_service.send_text_message(instance, remote_jid, text)
+    if not sent:
+        await supabase_service.registrar_log(
+            "ERROR",
+            f"Falha ao enviar texto ({context}) via Evolution API para {remote_jid} na instancia {instance}.",
+            {"instance": instance, "remote_jid": remote_jid, "context": context, "preview": text[:160]},
+        )
+    return sent
+
 
 def get_session_lock(session_id: str) -> asyncio.Lock:
     if session_id not in active_locks:
@@ -89,7 +159,9 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         key = data.get("key", {})
 
         remote_jid = key.get("remoteJid", "")
-        remote_jid_alt = key.get("remoteJidAlt", "")
+        remote_jid_alt = key.get("remoteJidAlt", "") or key.get("senderPn", "") or data.get("senderPn", "")
+        if remote_jid_alt and "@" not in str(remote_jid_alt):
+            remote_jid_alt = f"{remote_jid_alt}@s.whatsapp.net"
         if remote_jid.endswith("@lid") and remote_jid_alt and "@s.whatsapp.net" in remote_jid_alt:
             remote_jid = remote_jid_alt
         if not remote_jid or "g.us" in remote_jid or "broadcast" in remote_jid:
@@ -181,10 +253,11 @@ async def process_whatsapp_message(body: Dict[str, Any]):
         # 🔒 BLOQUEIO COMPLETO DE SESSÃO: Toda a lógica restante executa dentro do lock por cliente
         async with get_session_lock(session_id):
             # 5. REGRA ABSOLUTA: MENSAGEM ENVIADA MANUALMENTE PELO TELEFONE/INSTANCIA DA EMPRESA (fromMe == True)
+            extracted_text = _extract_text_from_message_obj(message_obj)
+
             if key.get("fromMe"):
-                manual_text = message_obj.get("conversation") or message_obj.get("extendedTextMessage", {}).get("text") or ""
-                if session_id and manual_text:
-                    await agent_service.save_message_to_history(session_id, "assistant", f"[Atendente Humano da Loja]: {manual_text}")
+                if session_id and extracted_text:
+                    await agent_service.save_message_to_history(session_id, "assistant", f"[Atendente Humano da Loja]: {extracted_text}")
                 return
 
             # 🛡️ 6. BLINDAGEM ANTI-FLOOD / ANTI-BOT / PING-PONG INFINITO (Proteção de Custos de API):
@@ -194,25 +267,51 @@ async def process_whatsapp_message(body: Dict[str, Any]):
             timestamps.append(now_mono)
             SESSION_MESSAGE_TIMESTAMPS[session_id] = timestamps
 
+            norm_msg = " ".join(extracted_text.lower().split()) if extracted_text else ""
+            recent_texts = SESSION_MESSAGE_TEXTS.get(session_id, [])
+            # Mantém textos alinhados à janela de 300s (armazenados como "ts|texto" ou via lista paralela)
+            recent_texts = [item for item in recent_texts if now_mono - item[0] < 300]
+            if norm_msg:
+                recent_texts.append((now_mono, norm_msg))
+            SESSION_MESSAGE_TEXTS[session_id] = recent_texts
+
             recent_60s = [t for t in timestamps if now_mono - t < 60]
-            if len(recent_60s) > 6 or len(timestamps) > 14:
-                await supabase_service.registrar_log("WARN", f"Loop ou flood detectado para {remote_jid} na loja {empresa_id} ({len(timestamps)} msgs em 5min). Ativando transbordo humano para proteger custos de API.", {
-                    "session_id": session_id,
-                    "total_5min": len(timestamps),
-                    "recent_60s": len(recent_60s)
-                })
-                try:
-                    await supabase_service.set_transbordo_humano(empresa_id, phone_number, True)
-                except Exception as ex_tb:
-                    logger.error(f"Erro ao setar transbordo humano: {ex_tb}")
+            same_long_count = sum(1 for _, txt in recent_texts if len(norm_msg) >= 15 and txt == norm_msg)
+            has_auto_reply_marker = bool(norm_msg and any(marker in norm_msg for marker in BOT_AUTO_REPLY_MARKERS))
+            auto_reply_count = sum(
+                1 for _, txt in recent_texts if any(marker in txt for marker in BOT_AUTO_REPLY_MARKERS)
+            )
+
+            flood_reason = ""
+            if len(recent_60s) > 10 or len(timestamps) > 28:
+                flood_reason = f"volume excessivo ({len(recent_60s)} em 60s, {len(timestamps)} em 5min)"
+            elif same_long_count >= 5:
+                flood_reason = f"repetição idêntica ({same_long_count}x em 5min)"
+            elif has_auto_reply_marker and auto_reply_count >= 2:
+                flood_reason = "resposta automática repetida de outro bot"
+
+            if flood_reason:
+                # Evita inundar logs_agente em cada nova mensagem repetida do mesmo flood
+                if same_long_count in (5, 10) or len(timestamps) in (29, 40) or auto_reply_count == 2:
+                    await supabase_service.registrar_log(
+                        "WARN",
+                        f"Loop ou flood detectado para {remote_jid} na loja {empresa_id}: {flood_reason}. Ativando transbordo humano para proteger custos de API.",
+                        {
+                            "session_id": session_id,
+                            "reason": flood_reason,
+                            "total_5min": len(timestamps),
+                            "recent_60s": len(recent_60s),
+                            "same_long_count": same_long_count,
+                        },
+                    )
+                    try:
+                        await supabase_service.set_transbordo_humano(empresa_id, phone_number, True)
+                    except Exception as ex_tb:
+                        logger.error(f"Erro ao setar transbordo humano: {ex_tb}")
                 return
 
             # 🛡️ 7. BLINDAGEM DE DESPEDIDAS E PING-PONG DE FECHAMENTO ENTRE BOTS:
-            raw_text_for_check = (
-                message_obj.get("conversation") or 
-                message_obj.get("extendedTextMessage", {}).get("text") or 
-                ""
-            ).strip().lower()
+            raw_text_for_check = extracted_text.strip().lower()
             
             CLOSING_WORDS = {
                 "obrigado", "obrigada", "valeu", "valeu!", "tchau", "tchau!", "flw", "tmj",
@@ -239,7 +338,11 @@ async def process_whatsapp_message(body: Dict[str, Any]):
 
             # 8. VERIFICAÇÃO DE REGRA OBRIGATÓRIA: agente_desabilitado (tabela empresa)
             if empresa_data.get("agente_desabilitado"):
-                await supabase_service.registrar_log("INFO", f"Agente esta DESABILITADO para a loja {empresa_id}. Ignorando mensagem.")
+                await supabase_service.registrar_log(
+                    "WARN",
+                    f"Agente DESABILITADO para a loja {empresa_id} ({empresa_data.get('nome_empresa')}). Ignorando mensagem de {remote_jid}.",
+                    {"empresa_id": empresa_id, "remote_jid": remote_jid, "instance": instance},
+                )
                 return
 
             # 9. Registrar cliente em clientes_whatsapp
@@ -272,7 +375,16 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                     logger.info(f"Pausa de IA expirada para {phone_number}. Reativando IA automaticamente.")
                     await supabase_service.set_transbordo_humano(empresa_id, phone_number, status=False)
                 else:
-                    logger.info(f"Transbordo humano ATIVO para {phone_number} na loja {empresa_id}. Ignorando.")
+                    await supabase_service.registrar_log(
+                        "WARN",
+                        f"Transbordo humano ATIVO para {phone_number} na loja {empresa_id}. Ignorando mensagem.",
+                        {
+                            "empresa_id": empresa_id,
+                            "phone_number": phone_number,
+                            "pausa_ia_ate": pausa_ate_str,
+                            "transbordo_at": transbordo_at_str,
+                        },
+                    )
                     return
 
             # 11. Indicador de presença imediata no WhatsApp
@@ -308,7 +420,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                 if not user_message_text or not str(user_message_text).strip():
                     fallback_audio_msg = "Desculpe, não consegui entender o áudio com clareza. 😊 Você poderia digitar ou enviar outro áudio?"
                     await agent_service.save_message_to_history(session_id, "assistant", fallback_audio_msg)
-                    await evolution_service.send_text_message(instance, remote_jid, fallback_audio_msg)
+                    await _send_text_with_log(instance, remote_jid, fallback_audio_msg, context="fallback_audio")
                     return
 
             elif message_type in ["locationMessage", "liveLocationMessage"]:
@@ -329,11 +441,11 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                     "Nome da Rua, Número da casa e Bairro. 😊"
                 )
                 await agent_service.save_message_to_history(session_id, "assistant", written_addr_msg)
-                await evolution_service.send_text_message(instance, remote_jid, written_addr_msg)
+                await _send_text_with_log(instance, remote_jid, written_addr_msg, context="localizacao_gps")
                 return
 
             else:
-                user_message_text = message_obj.get("conversation") or caption or "Mensagem recebida"
+                user_message_text = _extract_text_from_message_obj(message_obj, caption=caption) or "Mensagem recebida"
 
             if not user_message_text or not str(user_message_text).strip():
                 user_message_text = "Olá!"
@@ -395,7 +507,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
 
             # 14. Enviar a resposta via Evolution API
             if clean_text:
-                await evolution_service.send_text_message(instance, remote_jid, clean_text)
+                await _send_text_with_log(instance, remote_jid, clean_text, context="resposta_ia")
 
                 # Se a mensagem recebida foi áudio, sintetizar áudio TTS
                 if message_type == "audioMessage":
@@ -425,7 +537,7 @@ async def process_whatsapp_message(body: Dict[str, Any]):
                     "remote_jid": remote_jid
                 })
                 fallback_msg = "Desculpe, ocorreu uma instabilidade momentânea no atendimento. Um atendente da nossa equipe irá te responder em breve!"
-                await evolution_service.send_text_message(instance, remote_jid, fallback_msg)
+                await _send_text_with_log(instance, remote_jid, fallback_msg, context="fallback_erro_critico")
         except Exception as ex_critical:
             logger.error(f"Falha no handler de erro severo: {ex_critical}")
 

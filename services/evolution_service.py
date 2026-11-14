@@ -15,10 +15,19 @@ class EvolutionService:
             "Content-Type": "application/json"
         }
 
+    @staticmethod
+    def _format_number(remote_jid: str) -> str:
+        """Preserva JID @lid intacto quando não houver telefone real; para @s.whatsapp.net extrai apenas o número."""
+        if not remote_jid:
+            return ""
+        if "@lid" in remote_jid:
+            return remote_jid
+        return remote_jid.split('@')[0]
+
     async def send_presence(self, instance: str, remote_jid: str, state: str = "composing") -> bool:
         """Envia indicador de 'digitando...' (composing) ou 'gravando áudio...' (recording) no WhatsApp"""
         url = f"{self.base_url}/chat/sendPresence/{instance}"
-        number = remote_jid.split('@')[0]
+        number = self._format_number(remote_jid)
         payload = {
             "number": number,
             "remoteJid": remote_jid,
@@ -37,7 +46,7 @@ class EvolutionService:
         """Envia mensagem de texto via Evolution API"""
         url = f"{self.base_url}/message/sendText/{instance}"
         payload = {
-            "number": remote_jid.split('@')[0],
+            "number": self._format_number(remote_jid),
             "text": text,
             "options": {
                 "delay": 1000,
@@ -48,16 +57,19 @@ class EvolutionService:
         async with httpx.AsyncClient(timeout=15.0) as client:
             try:
                 res = await client.post(url, headers=self.get_headers(), json=payload)
+                if res.status_code >= 400:
+                    logger.error(f"Evolution sendText HTTP {res.status_code} ({instance} -> {remote_jid}): {res.text[:300]}")
+                    return False
                 res.raise_for_status()
                 return True
             except Exception as e:
-                logger.error(f"Erro ao enviar mensagem de texto Evolution API: {e}")
+                logger.error(f"Erro ao enviar mensagem de texto Evolution API ({instance} -> {remote_jid}): {e}")
                 return False
 
     async def send_image_message(self, instance: str, remote_jid: str, image_url: str, caption: str = "") -> bool:
         """Envia foto/imagem nativa do produto no WhatsApp via Evolution API"""
         url = f"{self.base_url}/message/sendMedia/{instance}"
-        number = remote_jid.split('@')[0]
+        number = self._format_number(remote_jid)
         payload = {
             "number": number,
             "media": image_url,
@@ -82,7 +94,7 @@ class EvolutionService:
     async def send_whatsapp_audio(self, instance: str, remote_jid: str, base64_audio: str) -> bool:
         """Envia arquivo de áudio PTT/WhatsApp via Evolution API"""
         url = f"{self.base_url}/message/sendWhatsAppAudio/{instance}"
-        number = remote_jid.split('@')[0]
+        number = self._format_number(remote_jid)
         
         clean_b64 = base64_audio.split(",")[-1] if "," in base64_audio else base64_audio
 

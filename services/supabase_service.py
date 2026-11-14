@@ -22,7 +22,7 @@ class SupabaseService:
         nivel_upper = (nivel or "").upper()
         # Reduzir Disk IO no Supabase: mensagens rotineiras de webhook vao apenas pro log do container
         if nivel_upper == "INFO":
-            if any(term in mensagem for term in ["DESABILITADO", "Webhook recebido", "Mensagem ignorada", "Mensagem recebida"]):
+            if any(term in mensagem for term in ["Webhook recebido", "Mensagem ignorada", "Mensagem recebida"]):
                 logger.info(f"[{nivel}] {mensagem}")
                 return
 
@@ -111,8 +111,8 @@ class SupabaseService:
                 return None
 
     async def registrar_cliente_se_nao_existir(self, empresa_id: Any, telefone: str, nome: str) -> bool:
-        url = f"{self.base_url}/rest/v1/clientes_whatsapp"
-        headers = {**self.headers, "Prefer": "resolution=merge-duplicates"}
+        url = f"{self.base_url}/rest/v1/clientes_whatsapp?on_conflict=empresa_id,telefone"
+        headers = {**self.headers, "Prefer": "resolution=ignore-duplicates"}
         try:
             emp_id_numeric = int(empresa_id) if str(empresa_id).isdigit() else 43
         except Exception:
@@ -122,11 +122,13 @@ class SupabaseService:
             "empresa_id": emp_id_numeric,
             "telefone": telefone,
             "nome": f"{nome} - WhatsApp",
-            "transbordo_humano": False
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
-                await client.post(url, headers=headers, json=payload)
+                res = await client.post(url, headers=headers, json=payload)
+                if res.status_code >= 400:
+                    logger.warning(f"Status {res.status_code} ao garantir cliente_whatsapp: {res.text[:200]}")
+                    return False
                 return True
             except Exception as e:
                 logger.error(f"Erro ao registrar cliente whatsapp: {e}")
